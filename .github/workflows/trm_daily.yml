@@ -15,12 +15,12 @@ jobs:
 
     steps:
       - name: Descargar código del repositorio
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4 # <-- Actualizado a v4 (Node compatible)
         with:
-          persist-credentials: true # Clave para solucionar el Error 128
+          persist-credentials: true
 
       - name: Configurar Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5 # <-- Actualizado a v5 (Node compatible)
         with:
           python-version: '3.10'
 
