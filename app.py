@@ -7,7 +7,11 @@ from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
 
 # Importación del backend con la metodología GBM + EWMA
-from proyecciones import calcular_precio_interno_referencia, calcular_todas_las_proyecciones
+from proyecciones import (
+    calcular_precio_interno_referencia,
+    ejecutar_simulacion,
+    calcular_metricas_riesgo,
+)
 
 # =====================================================================
 # CONFIGURACIÓN DE LA PÁGINA DE STREAMLIT
@@ -41,7 +45,7 @@ if USA_FACTOR_RENDIMIENTO:
     LIBRAS_POR_CARGA = (125.0 / FACTOR_RENDIMIENTO) * 70.0 * 2.20462262
     KG_EXCELSO_POR_CARGA = (125.0 / FACTOR_RENDIMIENTO) * 70.0
     KG_PASILLA_POR_CARGA = max(0.0, 125.0 - KG_EXCELSO_POR_CARGA - 18.0)
-    
+
     st.sidebar.info(f"💡 **Excelso:** {LIBRAS_POR_CARGA:.2f} lbs ({KG_EXCELSO_POR_CARGA:.1f} kg) | **Pasilla:** {KG_PASILLA_POR_CARGA:.1f} kg")
 else:
     LIBRAS_POR_CARGA = st.sidebar.number_input(
@@ -133,8 +137,11 @@ def obtener_datos_mercado():
         return pd.DataFrame({"cafe": p_cafe, "trm": p_trm}, index=fechas), "FALLBACK"
 
 @st.cache_data(ttl=600, show_spinner=False)
-def ejecutar_motor_proyecciones(params_dict, df_mercado):
-    return calcular_todas_las_proyecciones(params_dict, df_mercado)
+def ejecutar_motor_simulacion(dias_analisis, df_mercado):
+    # Única simulación GBM-EWMA. Café y TRM se proyectan aquí una sola vez;
+    # tanto la sección 2 (proyecciones individuales) como la sección 3
+    # (riesgo de la carga) parten de este mismo resultado.
+    return ejecutar_simulacion(dias_analisis, df_mercado)
 
 # =====================================================================
 # EJECUCIÓN PRINCIPAL
@@ -146,39 +153,42 @@ precio_ny_hoy = df_mercado['cafe'].iloc[-1]
 trm_hoy = df_mercado['trm'].iloc[-1]
 
 precio_carga_hoy, valor_excelso_hoy, valor_pasilla_hoy = calcular_precio_interno_referencia(
-    precio_ny_hoy, trm_hoy, DIFERENCIAL_CALIDAD_USD_LB, COSTOS_EXPORTACION_USD_LB, 
+    precio_ny_hoy, trm_hoy, DIFERENCIAL_CALIDAD_USD_LB, COSTOS_EXPORTACION_USD_LB,
     LIBRAS_POR_CARGA, KG_PASILLA_POR_CARGA, PRECIO_PASILLA_COP_KG
 )
 valor_inventario_hoy = precio_carga_hoy * VOLUMEN_CARGAS
 
-# EJECUCIÓN DEL MOTOR INTERNO DE PROYECCIONES
+# 1) SIMULACIÓN GBM-EWMA (única fuente de la proyección de café y TRM)
+with st.spinner("Ejecutando simulación GBM-EWMA en segundo plano..."):
+    simulacion = ejecutar_motor_simulacion(dias_analisis, df_mercado)
+
+trayectorias_cafe = simulacion['trayectorias_cafe']
+trayectorias_trm = simulacion['trayectorias_trm']
+
+# Precios simulados en el horizonte (t = dias_analisis): ESTA es "la proyección"
+cafe_futuro = trayectorias_cafe[dias_analisis, :]
+trm_futura = trayectorias_trm[dias_analisis, :]
+
+# 2) MÉTRICAS DE RIESGO DE LA CARGA, calculadas EXPLÍCITAMENTE a partir de
+#    cafe_futuro / trm_futura (los mismos arreglos de la proyección de la
+#    sección 2). Nada se recalcula por separado.
 params_simulacion = {
     'diferencial_usd': DIFERENCIAL_CALIDAD_USD_LB,
     'costos_usd': COSTOS_EXPORTACION_USD_LB,
     'libras_carga': LIBRAS_POR_CARGA,
     'kg_pasilla': KG_PASILLA_POR_CARGA,
     'precio_pasilla_kg': PRECIO_PASILLA_COP_KG,
-    'dias_analisis': dias_analisis,
     'volumen_cargas': VOLUMEN_CARGAS,
     'tenor': TENOR_ANALISIS,
-    'cotizaciones': COTIZACIONES_PUT_COP
+    'cotizaciones': COTIZACIONES_PUT_COP,
 }
 
-with st.spinner("Ejecutando simulación GBM-EWMA en segundo plano..."):
-    proyecciones = ejecutar_motor_proyecciones(params_simulacion, df_mercado)
+metricas_riesgo = calcular_metricas_riesgo(cafe_futuro, trm_futura, params_simulacion)
 
-precios_futuros = proyecciones['precios_futuros']
-var_95 = proyecciones['var_95']
-precio_promedio_sim = proyecciones['precio_promedio_sim']
-trm_promedio_sim = proyecciones['trm_promedio_sim']
-
-# Extraer trayectorias del backend
-trayectorias_cafe = proyecciones.get('trayectorias_cafe')
-trayectorias_trm = proyecciones.get('trayectorias_trm')
-
-# Precios simulados en el horizonte (t = dias_analisis)
-cafe_futuro = trayectorias_cafe[dias_analisis, :] if trayectorias_cafe is not None else np.array([])
-trm_futura = trayectorias_trm[dias_analisis, :] if trayectorias_trm is not None else np.array([])
+precios_futuros = metricas_riesgo['precios_futuros']
+var_95 = metricas_riesgo['var_95']
+precio_promedio_sim = metricas_riesgo['precio_promedio_sim']
+trm_promedio_sim = metricas_riesgo['trm_promedio_sim']
 
 # ---------------------------------------------------------------------
 # 1. MÉTRICAS PRINCIPALES DE MERCADO
@@ -199,7 +209,7 @@ st.info(
 st.markdown("---")
 
 # ---------------------------------------------------------------------
-# NUEVA SECCIÓN: PROYECCIONES INDIVIDUALES (CAFÉ Y TRM)
+# 2. PROYECCIONES INDIVIDUALES (CAFÉ Y TRM)
 # ---------------------------------------------------------------------
 st.subheader(f"2. Proyecciones Individuales de Mercado a {dias_analisis} Días")
 
@@ -220,7 +230,6 @@ if len(cafe_futuro) > 0 and len(trm_futura) > 0:
         st.caption(f"📉 **Escenario Crítico (P5%):** ${cafe_p5:.2f} USD/lb")
         st.caption(f"📈 **Escenario Alcista (P95%):** ${cafe_p95:.2f} USD/lb")
 
-        # Gráfico Histograma Café
         fig_c, ax_c = plt.subplots(figsize=(6, 3))
         ax_c.hist(cafe_futuro / 100.0, bins=40, color='#B45309', alpha=0.7, edgecolor='white')
         ax_c.axvline(precio_ny_hoy/100, color='#10B981', linestyle='--', label='Hoy')
@@ -237,7 +246,6 @@ if len(cafe_futuro) > 0 and len(trm_futura) > 0:
         st.caption(f"📉 **Escenario Crítico (P5%):** ${trm_p5:,.2f} COP")
         st.caption(f"📈 **Escenario Alcista (P95%):** ${trm_p95:,.2f} COP")
 
-        # Gráfico Histograma TRM
         fig_t, ax_t = plt.subplots(figsize=(6, 3))
         ax_t.hist(trm_futura, bins=40, color='#047857', alpha=0.7, edgecolor='white')
         ax_t.axvline(trm_hoy, color='#10B981', linestyle='--', label='Hoy')
@@ -247,6 +255,12 @@ if len(cafe_futuro) > 0 and len(trm_futura) > 0:
         ax_t.grid(True, alpha=0.3)
         ax_t.legend(fontsize=7)
         st.pyplot(fig_t)
+
+    st.caption(
+        "ℹ️ El precio de la carga de la sección 3 se calcula escenario por escenario "
+        "aplicando la fórmula de referencia directamente sobre estos mismos arreglos "
+        "de café y TRM — no es una simulación aparte."
+    )
 
 st.markdown("---")
 
@@ -335,4 +349,4 @@ st.markdown("---")
 # 5. COTIZACIONES REALES DE OPCIONES PUT
 # ---------------------------------------------------------------------
 st.subheader(f"5. Cotizaciones Reales de Mercado para Opciones Put ({TENOR_ANALISIS.upper()})")
-st.dataframe(proyecciones['df_cotizaciones'], use_container_width=True)
+st.dataframe(metricas_riesgo['df_cotizaciones'], use_container_width=True)
