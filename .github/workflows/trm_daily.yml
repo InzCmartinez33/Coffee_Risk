@@ -1,14 +1,43 @@
-- name: Guardar cambios y subirlos a GitHub
+name: Actualizador Diario de TRM
+
+on:
+  schedule:
+    # 1:00 AM UTC = 8:00 PM Hora Colombia (UTC-5)
+    - cron: '0 1 * * *'
+  workflow_dispatch: # Permite disparo manual
+
+permissions:
+  contents: write # Otorga permisos explícitos de escritura
+
+jobs:
+  actualizar-trm:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Descargar código del repositorio
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Instalar librerías necesarias
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests pandas
+
+      - name: Ejecutar script de TRM
+        run: python actualizar_trm.py
+
+      - name: Guardar cambios y subirlos a GitHub
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           
-          # Verifica si el archivo existe antes de añadirlo
-          if [ -f datos_trm.json ]; then
-            git add datos_trm.json
-            git commit -m "🤖 Auto-actualización diaria TRM [8:00 PM Colombia]" || exit 0
-            git push
-          else
-            echo "⚠️ El archivo datos_trm.json no fue generado por el script de Python."
-            exit 1
-          fi
+          # Añade el archivo creado dinámicamente y sube el commit
+          git add datos_trm.json
+          git commit -m "🤖 Auto-actualización diaria TRM [8:00 PM Colombia]" || exit 0
+          git push
