@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 import requests
 from datetime import datetime, timedelta
-import plotly.graph_objects as go
+import matplotlib.pyplot as plt
 
 # Importación del backend con la metodología GBM + EWMA
 from proyecciones import calcular_precio_interno_referencia, calcular_todas_las_proyecciones
@@ -171,7 +171,6 @@ precios_futuros = proyecciones['precios_futuros']
 var_95 = proyecciones['var_95']
 precio_promedio_sim = proyecciones['precio_promedio_sim']
 trm_promedio_sim = proyecciones['trm_promedio_sim']
-trayectorias_carga = proyecciones['trayectorias_carga']
 
 # ---------------------------------------------------------------------
 # 1. MÉTRICAS PRINCIPALES DE MERCADO
@@ -211,64 +210,35 @@ else:
     st.success("🟢 **RECOMENDACIÓN:** RIESGO TOLERABLE. Monitorear volatilidad de mercado.")
 
 # ---------------------------------------------------------------------
-# ABANICO DE PREDICCIÓN (FAN CHART)
+# GRÁFICO DE DISTRIBUCIÓN DE MONTECARLO (HISTOGRAMA)
 # ---------------------------------------------------------------------
-st.markdown("#### 📈 Abanico de Predicción Multitemporal (Fan Chart)")
+st.markdown("#### 📊 Distribución de Probabilidad de Precios de la Carga")
 
-dias_eje = np.arange(0, dias_analisis + 1)
-p5_diario = np.percentile(trayectorias_carga, 5, axis=1)
-p25_diario = np.percentile(trayectorias_carga, 25, axis=1)
-p50_diario = np.percentile(trayectorias_carga, 50, axis=1)
-p75_diario = np.percentile(trayectorias_carga, 75, axis=1)
-p95_diario = np.percentile(trayectorias_carga, 95, axis=1)
+fig, ax = plt.subplots(figsize=(10, 4.5))
 
-fig = go.Figure()
+# Histograma de frecuencias
+n, bins, patches = ax.hist(precios_futuros, bins=60, density=True, alpha=0.6, color='#2563EB', edgecolor='white')
 
-# Banda 90% Confianza (P5 a P95)
-fig.add_trace(go.Scatter(
-    x=np.concatenate([dias_eje, dias_eje[::-1]]),
-    y=np.concatenate([p95_diario, p5_diario[::-1]]),
-    fill='toself',
-    fillcolor='rgba(30, 58, 138, 0.15)',
-    line=dict(color='rgba(255,255,255,0)'),
-    hoverinfo="skip",
-    name="Estrés / Volatilidad (90%)"
-))
+# Sombrear la zona de cola del 5% de mayor riesgo (VaR 95%)
+for i in range(len(patches)):
+    if bins[i] < var_95:
+        patches[i].set_facecolor('#DC2626') # Color rojo para la zona de riesgo
 
-# Banda 50% Confianza (P25 a P75)
-fig.add_trace(go.Scatter(
-    x=np.concatenate([dias_eje, dias_eje[::-1]]),
-    y=np.concatenate([p75_diario, p25_diario[::-1]]),
-    fill='toself',
-    fillcolor='rgba(30, 58, 138, 0.30)',
-    line=dict(color='rgba(255,255,255,0)'),
-    hoverinfo="skip",
-    name="Alta Probabilidad (50%)"
-))
+# Líneas verticales de referencia
+ax.axvline(precio_carga_hoy, color='#10B981', linestyle='--', linewidth=2, label=f'Precio Base Hoy (${precio_carga_hoy:,.0f})')
+ax.axvline(var_95, color='#DC2626', linestyle='-', linewidth=2, label=f'VaR 95% (${var_95:,.0f})')
+ax.axvline(precio_promedio_sim, color='#1E3A8A', linestyle=':', linewidth=2, label=f'Mediana Simulada (${precio_promedio_sim:,.0f})')
 
-# Mediana (P50)
-fig.add_trace(go.Scatter(
-    x=dias_eje, y=p50_diario,
-    mode='lines',
-    line=dict(color='#2563EB', width=3),
-    name="Tendencia Esperada (P50%)"
-))
+ax.set_title(f"Distribución a {dias_analisis} Días (Simulación Montecarlo con Volatilidad EWMA)", fontsize=11, fontweight='bold')
+ax.set_xlabel("Precio de la Carga (COP)")
+ax.set_ylabel("Densidad de Probabilidad")
+ax.grid(True, alpha=0.3)
+ax.legend(loc='upper right')
 
-# Línea base hoy
-fig.add_shape(
-    type="line", x0=0, x1=dias_analisis, y0=precio_carga_hoy, y1=precio_carga_hoy,
-    line=dict(color="#10B981", width=2, dash="dash")
-)
+# Formatear eje X como precios COP
+ax.xaxis.set_major_formatter('${x:,.0f}')
 
-fig.update_layout(
-    title=f"Proyección de Precios de Carga a {dias_analisis} Días",
-    xaxis_title="Días Proyectados",
-    yaxis_title="Precio Carga (COP)",
-    hovermode="x unified",
-    margin=dict(l=20, r=20, t=40, b=20)
-)
-
-st.plotly_chart(fig, use_container_width=True)
+st.pyplot(fig)
 
 st.markdown("---")
 
