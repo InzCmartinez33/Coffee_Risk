@@ -1,5 +1,6 @@
 streamlit
-numpy
+yfinance
 pandas
-matplotlib
+numpy
 requests
+curl_cffi
