@@ -172,10 +172,18 @@ var_95 = proyecciones['var_95']
 precio_promedio_sim = proyecciones['precio_promedio_sim']
 trm_promedio_sim = proyecciones['trm_promedio_sim']
 
+# Extraer trayectorias del backend
+trayectorias_cafe = proyecciones.get('trayectorias_cafe')
+trayectorias_trm = proyecciones.get('trayectorias_trm')
+
+# Precios simulados en el horizonte (t = dias_analisis)
+cafe_futuro = trayectorias_cafe[dias_analisis, :] if trayectorias_cafe is not None else np.array([])
+trm_futura = trayectorias_trm[dias_analisis, :] if trayectorias_trm is not None else np.array([])
+
 # ---------------------------------------------------------------------
 # 1. MÉTRICAS PRINCIPALES DE MERCADO
 # ---------------------------------------------------------------------
-st.subheader("1. Métricas Principales de Mercado")
+st.subheader("1. Métricas Principales de Mercado (Spot Hoy)")
 col1, col2, col3, col4 = st.columns(4)
 col1.metric("Café NY (KC=F)", f"{precio_ny_hoy/100:.2f} USD/lb")
 col2.metric("TRM Oficial (COP)", f"${trm_hoy:,.2f}")
@@ -191,9 +199,61 @@ st.info(
 st.markdown("---")
 
 # ---------------------------------------------------------------------
-# 2. MONTECARLO Y VAR (METODOLOGÍA GBM - EWMA)
+# NUEVA SECCIÓN: PROYECCIONES INDIVIDUALES (CAFÉ Y TRM)
 # ---------------------------------------------------------------------
-st.subheader(f"2. Análisis de Riesgo Financiero (Montecarlo GBM-EWMA a {dias_analisis} días)")
+st.subheader(f"2. Proyecciones Individuales de Mercado a {dias_analisis} Días")
+
+if len(cafe_futuro) > 0 and len(trm_futura) > 0:
+    cafe_p5 = np.percentile(cafe_futuro, 5) / 100.0
+    cafe_p50 = np.percentile(cafe_futuro, 50) / 100.0
+    cafe_p95 = np.percentile(cafe_futuro, 95) / 100.0
+
+    trm_p5 = np.percentile(trm_futura, 5)
+    trm_p50 = np.percentile(trm_futura, 50)
+    trm_p95 = np.percentile(trm_futura, 95)
+
+    col_cafe, col_trm = st.columns(2)
+
+    with col_cafe:
+        st.markdown("#### ☕ Proyección Café NY (USD/lb)")
+        st.metric("Promedio Esperado (P50)", f"${cafe_p50:.2f} USD/lb", delta=f"{(cafe_p50 - (precio_ny_hoy/100)):.2f} USD")
+        st.caption(f"📉 **Escenario Crítico (P5%):** ${cafe_p5:.2f} USD/lb")
+        st.caption(f"📈 **Escenario Alcista (P95%):** ${cafe_p95:.2f} USD/lb")
+
+        # Gráfico Histograma Café
+        fig_c, ax_c = plt.subplots(figsize=(6, 3))
+        ax_c.hist(cafe_futuro / 100.0, bins=40, color='#B45309', alpha=0.7, edgecolor='white')
+        ax_c.axvline(precio_ny_hoy/100, color='#10B981', linestyle='--', label='Hoy')
+        ax_c.axvline(cafe_p50, color='#1E3A8A', linestyle='-', label='Esperado')
+        ax_c.set_title("Distribución Café NY", fontsize=9, fontweight='bold')
+        ax_c.set_xlabel("USD / lb", fontsize=8)
+        ax_c.grid(True, alpha=0.3)
+        ax_c.legend(fontsize=7)
+        st.pyplot(fig_c)
+
+    with col_trm:
+        st.markdown("#### 💵 Proyección Dólar TRM (COP/USD)")
+        st.metric("Promedio Esperado (P50)", f"${trm_p50:,.2f} COP", delta=f"{(trm_p50 - trm_hoy):,.2f} COP")
+        st.caption(f"📉 **Escenario Crítico (P5%):** ${trm_p5:,.2f} COP")
+        st.caption(f"📈 **Escenario Alcista (P95%):** ${trm_p95:,.2f} COP")
+
+        # Gráfico Histograma TRM
+        fig_t, ax_t = plt.subplots(figsize=(6, 3))
+        ax_t.hist(trm_futura, bins=40, color='#047857', alpha=0.7, edgecolor='white')
+        ax_t.axvline(trm_hoy, color='#10B981', linestyle='--', label='Hoy')
+        ax_t.axvline(trm_p50, color='#1E3A8A', linestyle='-', label='Esperado')
+        ax_t.set_title("Distribución TRM", fontsize=9, fontweight='bold')
+        ax_t.set_xlabel("COP / USD", fontsize=8)
+        ax_t.grid(True, alpha=0.3)
+        ax_t.legend(fontsize=7)
+        st.pyplot(fig_t)
+
+st.markdown("---")
+
+# ---------------------------------------------------------------------
+# 3. MONTECARLO Y VAR PRECIO DE LA CARGA
+# ---------------------------------------------------------------------
+st.subheader(f"3. Análisis de Riesgo Financiero - Carga de Café a {dias_analisis} días")
 
 perdida_max_por_carga = precio_carga_hoy - var_95
 perdida_total_empresa = perdida_max_por_carga * VOLUMEN_CARGAS
@@ -210,21 +270,18 @@ else:
     st.success("🟢 **RECOMENDACIÓN:** RIESGO TOLERABLE. Monitorear volatilidad de mercado.")
 
 # ---------------------------------------------------------------------
-# GRÁFICO DE DISTRIBUCIÓN DE MONTECARLO (HISTOGRAMA)
+# GRÁFICO DE DISTRIBUCIÓN CARGA TOTAL
 # ---------------------------------------------------------------------
-st.markdown("#### 📊 Distribución de Probabilidad de Precios de la Carga")
+st.markdown("#### 📊 Distribución de Probabilidad del Precio de la Carga")
 
-fig, ax = plt.subplots(figsize=(10, 4.5))
+fig, ax = plt.subplots(figsize=(10, 4))
 
-# Histograma de frecuencias
 n, bins, patches = ax.hist(precios_futuros, bins=60, density=True, alpha=0.6, color='#2563EB', edgecolor='white')
 
-# Sombrear la zona de cola del 5% de mayor riesgo (VaR 95%)
 for i in range(len(patches)):
     if bins[i] < var_95:
-        patches[i].set_facecolor('#DC2626') # Color rojo para la zona de riesgo
+        patches[i].set_facecolor('#DC2626')
 
-# Líneas verticales de referencia
 ax.axvline(precio_carga_hoy, color='#10B981', linestyle='--', linewidth=2, label=f'Precio Base Hoy (${precio_carga_hoy:,.0f})')
 ax.axvline(var_95, color='#DC2626', linestyle='-', linewidth=2, label=f'VaR 95% (${var_95:,.0f})')
 ax.axvline(precio_promedio_sim, color='#1E3A8A', linestyle=':', linewidth=2, label=f'Mediana Simulada (${precio_promedio_sim:,.0f})')
@@ -235,7 +292,6 @@ ax.set_ylabel("Densidad de Probabilidad")
 ax.grid(True, alpha=0.3)
 ax.legend(loc='upper right')
 
-# Formatear eje X como precios COP
 ax.xaxis.set_major_formatter('${x:,.0f}')
 
 st.pyplot(fig)
@@ -243,9 +299,9 @@ st.pyplot(fig)
 st.markdown("---")
 
 # ---------------------------------------------------------------------
-# 3. COBERTURAS TEÓRICAS
+# 4. COBERTURAS TEÓRICAS
 # ---------------------------------------------------------------------
-st.subheader("3. Comparación de Coberturas Teóricas")
+st.subheader("4. Comparación de Coberturas Teóricas")
 dolares_por_carga = precio_carga_hoy / trm_hoy
 costo_forward = FORWARD_SPREAD_COP_USD * dolares_por_carga
 precio_forward = precio_carga_hoy - costo_forward
@@ -276,7 +332,7 @@ with tab3:
 st.markdown("---")
 
 # ---------------------------------------------------------------------
-# 4. COTIZACIONES REALES DE OPCIONES PUT
+# 5. COTIZACIONES REALES DE OPCIONES PUT
 # ---------------------------------------------------------------------
-st.subheader(f"4. Cotizaciones Reales de Mercado para Opciones Put ({TENOR_ANALISIS.upper()})")
+st.subheader(f"5. Cotizaciones Reales de Mercado para Opciones Put ({TENOR_ANALISIS.upper()})")
 st.dataframe(proyecciones['df_cotizaciones'], use_container_width=True)
