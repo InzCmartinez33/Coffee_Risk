@@ -199,32 +199,38 @@ st.info(
 st.markdown("---")
 
 # ---------------------------------------------------------------------
-# NUEVA SECCIÓN: PROYECCIONES INDIVIDUALES (CAFÉ Y TRM)
+# 2. PROYECCIONES INDIVIDUALES (CAFÉ Y TRM)
 # ---------------------------------------------------------------------
 st.subheader(f"2. Proyecciones Individuales de Mercado a {dias_analisis} Días")
 
 if len(cafe_futuro) > 0 and len(trm_futura) > 0:
+    # Usar directamente las medias calculadas por proyecciones.py para mantener consistencia
+    trm_prom_sim = dict_proy["trm_promedio_sim"]
+    cafe_prom_sim = np.mean(cafe_futuro) / 100.0  # Promedio exacto de la simulación de Café
+
+    # Percentiles de control para escenarios extremos (Bandas)
     cafe_p5 = np.percentile(cafe_futuro, 5) / 100.0
-    cafe_p50 = np.percentile(cafe_futuro, 50) / 100.0
     cafe_p95 = np.percentile(cafe_futuro, 95) / 100.0
 
     trm_p5 = np.percentile(trm_futura, 5)
-    trm_p50 = np.percentile(trm_futura, 50)
     trm_p95 = np.percentile(trm_futura, 95)
 
     col_cafe, col_trm = st.columns(2)
 
     with col_cafe:
         st.markdown("#### ☕ Proyección Café NY (USD/lb)")
-        st.metric("Promedio Esperado (P50)", f"${cafe_p50:.2f} USD/lb", delta=f"{(cafe_p50 - (precio_ny_hoy/100)):.2f} USD")
+        st.metric(
+            "Precio Promedio Simulado", 
+            f"${cafe_prom_sim:.2f} USD/lb", 
+            delta=f"{(cafe_prom_sim - (precio_ny_hoy/100)):.2f} USD"
+        )
         st.caption(f"📉 **Escenario Crítico (P5%):** ${cafe_p5:.2f} USD/lb")
         st.caption(f"📈 **Escenario Alcista (P95%):** ${cafe_p95:.2f} USD/lb")
 
-        # Gráfico Histograma Café
         fig_c, ax_c = plt.subplots(figsize=(6, 3))
         ax_c.hist(cafe_futuro / 100.0, bins=40, color='#B45309', alpha=0.7, edgecolor='white')
         ax_c.axvline(precio_ny_hoy/100, color='#10B981', linestyle='--', label='Hoy')
-        ax_c.axvline(cafe_p50, color='#1E3A8A', linestyle='-', label='Esperado')
+        ax_c.axvline(cafe_prom_sim, color='#1E3A8A', linestyle='-', label='Promedio Proyectado')
         ax_c.set_title("Distribución Café NY", fontsize=9, fontweight='bold')
         ax_c.set_xlabel("USD / lb", fontsize=8)
         ax_c.grid(True, alpha=0.3)
@@ -233,22 +239,24 @@ if len(cafe_futuro) > 0 and len(trm_futura) > 0:
 
     with col_trm:
         st.markdown("#### 💵 Proyección Dólar TRM (COP/USD)")
-        st.metric("Promedio Esperado (P50)", f"${trm_p50:,.2f} COP", delta=f"{(trm_p50 - trm_hoy):,.2f} COP")
+        # Carga directa del valor de proyecciones.py
+        st.metric(
+            "TRM Promedio Simulada", 
+            f"${trm_prom_sim:,.2f} COP", 
+            delta=f"{(trm_prom_sim - trm_hoy):,.2f} COP"
+        )
         st.caption(f"📉 **Escenario Crítico (P5%):** ${trm_p5:,.2f} COP")
         st.caption(f"📈 **Escenario Alcista (P95%):** ${trm_p95:,.2f} COP")
 
-        # Gráfico Histograma TRM
         fig_t, ax_t = plt.subplots(figsize=(6, 3))
         ax_t.hist(trm_futura, bins=40, color='#047857', alpha=0.7, edgecolor='white')
         ax_t.axvline(trm_hoy, color='#10B981', linestyle='--', label='Hoy')
-        ax_t.axvline(trm_p50, color='#1E3A8A', linestyle='-', label='Esperado')
+        ax_t.axvline(trm_prom_sim, color='#1E3A8A', linestyle='-', label='Promedio Proyectado')
         ax_t.set_title("Distribución TRM", fontsize=9, fontweight='bold')
         ax_t.set_xlabel("COP / USD", fontsize=8)
         ax_t.grid(True, alpha=0.3)
         ax_t.legend(fontsize=7)
         st.pyplot(fig_t)
-
-st.markdown("---")
 
 # ---------------------------------------------------------------------
 # 3. MONTECARLO Y VAR PRECIO DE LA CARGA
