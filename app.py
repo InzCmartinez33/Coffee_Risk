@@ -3,8 +3,11 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import requests
-import os
 from datetime import datetime, timedelta
+import plotly.graph_objects as go
+
+# Importación del backend con la metodología GBM + EWMA
+from proyecciones import calcular_precio_interno_referencia, calcular_todas_las_proyecciones
 
 # =====================================================================
 # CONFIGURACIÓN DE LA PÁGINA DE STREAMLIT
@@ -17,7 +20,7 @@ st.set_page_config(
 )
 
 st.title("☕ RiskCafe Engine - Gestión de Riesgo para Café")
-st.markdown("Herramienta de simulación de Montecarlo y valoración de coberturas financieras (Hedging) para comercializadores de café en Colombia.")
+st.markdown("Simulación de Montecarlo con **Movimiento Browniano Geométrico (GBM)** y **Volatilidad Estructural EWMA**.")
 
 # =====================================================================
 # SIDEBAR / CONFIGURACIÓN DE PARÁMETROS INTERACTIVOS
@@ -35,12 +38,8 @@ if USA_FACTOR_RENDIMIENTO:
         "Factor de Rendimiento (kg pergamino / 70 kg excelso)",
         value=94.0, step=0.5, format="%.2f", min_value=70.0
     )
-    # Libras de excelso = (125 / Factor) * 70 kg * 2.20462 lbs/kg
     LIBRAS_POR_CARGA = (125.0 / FACTOR_RENDIMIENTO) * 70.0 * 2.20462262
-    
-    # Kilos de excelso por carga
     KG_EXCELSO_POR_CARGA = (125.0 / FACTOR_RENDIMIENTO) * 70.0
-    # Kilos de pasilla estimada por carga (125kg - kg_excelso - 18kg merma/cisco)
     KG_PASILLA_POR_CARGA = max(0.0, 125.0 - KG_EXCELSO_POR_CARGA - 18.0)
     
     st.sidebar.info(f"💡 **Excelso:** {LIBRAS_POR_CARGA:.2f} lbs ({KG_EXCELSO_POR_CARGA:.1f} kg) | **Pasilla:** {KG_PASILLA_POR_CARGA:.1f} kg")
@@ -95,7 +94,7 @@ COTIZACIONES_PUT_COP = {
 }
 
 # =====================================================================
-# FUNCIONES DE OBTENCIÓN Y PROCESAMIENTO DE DATOS
+# FUNCIONES DE OBTENCIÓN DE DATOS
 # =====================================================================
 @st.cache_data(ttl=3600)
 def obtener_trm_oficial(fecha_inicio):
@@ -133,37 +132,12 @@ def obtener_datos_mercado():
         p_trm = 4050.0 + np.cumsum(np.random.normal(0, 15, 250))
         return pd.DataFrame({"cafe": p_cafe, "trm": p_trm}, index=fechas), "FALLBACK"
 
-def calcular_precio_interno_referencia(precio_ny_centavos, trm, libras_carga=LIBRAS_POR_CARGA, kg_pasilla=KG_PASILLA_POR_CARGA, precio_pasilla_kg=PRECIO_PASILLA_COP_KG):
-    precio_ny_usd_lb = precio_ny_centavos / 100
-    precio_neto_usd_lb = precio_ny_usd_lb + DIFERENCIAL_CALIDAD_USD_LB - COSTOS_EXPORTACION_USD_LB
-    valor_excelso_cop = precio_neto_usd_lb * trm * libras_carga
-    valor_pasilla_cop = kg_pasilla * precio_pasilla_kg
-    precio_carga_total_cop = valor_excelso_cop + valor_pasilla_cop
-    return precio_carga_total_cop, valor_excelso_cop, valor_pasilla_cop
-
-def simular_montecarlo_carga(datos_historicos, dias_proyeccion=90, simulaciones=3000):
-    np.random.seed(42)
-    retornos = np.log(datos_historicos / datos_historicos.shift(1)).dropna()
-    media = retornos.mean().values
-    covarianza = retornos.cov().values
-
-    shocks = np.random.multivariate_normal(media, covarianza, size=(dias_proyeccion, simulaciones))
-    log_retornos_acumulados = shocks.sum(axis=0)
-
-    ultimo_cafe = datos_historicos['cafe'].iloc[-1]
-    ultima_trm = datos_historicos['trm'].iloc[-1]
-
-    cafe_final = ultimo_cafe * np.exp(log_retornos_acumulados[:, 0])
-    trm_final = ultima_trm * np.exp(log_retornos_acumulados[:, 1])
-
-    precios_totales = [
-        calcular_precio_interno_referencia(c, t)[0]
-        for c, t in zip(cafe_final, trm_final)
-    ]
-    return np.array(precios_totales)
+@st.cache_data(ttl=600, show_spinner=False)
+def ejecutar_motor_proyecciones(params_dict, df_mercado):
+    return calcular_todas_las_proyecciones(params_dict, df_mercado)
 
 # =====================================================================
-# EJECUCIÓN PRINCIPAL DE LA APLICACIÓN
+# EJECUCIÓN PRINCIPAL
 # =====================================================================
 with st.spinner("Conectando con mercados y procesando datos..."):
     df_mercado, estado = obtener_datos_mercado()
@@ -172,9 +146,32 @@ precio_ny_hoy = df_mercado['cafe'].iloc[-1]
 trm_hoy = df_mercado['trm'].iloc[-1]
 
 precio_carga_hoy, valor_excelso_hoy, valor_pasilla_hoy = calcular_precio_interno_referencia(
-    precio_ny_hoy, trm_hoy, LIBRAS_POR_CARGA, KG_PASILLA_POR_CARGA, PRECIO_PASILLA_COP_KG
+    precio_ny_hoy, trm_hoy, DIFERENCIAL_CALIDAD_USD_LB, COSTOS_EXPORTACION_USD_LB, 
+    LIBRAS_POR_CARGA, KG_PASILLA_POR_CARGA, PRECIO_PASILLA_COP_KG
 )
 valor_inventario_hoy = precio_carga_hoy * VOLUMEN_CARGAS
+
+# EJECUCIÓN DEL MOTOR INTERNO DE PROYECCIONES
+params_simulacion = {
+    'diferencial_usd': DIFERENCIAL_CALIDAD_USD_LB,
+    'costos_usd': COSTOS_EXPORTACION_USD_LB,
+    'libras_carga': LIBRAS_POR_CARGA,
+    'kg_pasilla': KG_PASILLA_POR_CARGA,
+    'precio_pasilla_kg': PRECIO_PASILLA_COP_KG,
+    'dias_analisis': dias_analisis,
+    'volumen_cargas': VOLUMEN_CARGAS,
+    'tenor': TENOR_ANALISIS,
+    'cotizaciones': COTIZACIONES_PUT_COP
+}
+
+with st.spinner("Ejecutando simulación GBM-EWMA en segundo plano..."):
+    proyecciones = ejecutar_motor_proyecciones(params_simulacion, df_mercado)
+
+precios_futuros = proyecciones['precios_futuros']
+var_95 = proyecciones['var_95']
+precio_promedio_sim = proyecciones['precio_promedio_sim']
+trm_promedio_sim = proyecciones['trm_promedio_sim']
+trayectorias_carga = proyecciones['trayectorias_carga']
 
 # ---------------------------------------------------------------------
 # 1. MÉTRICAS PRINCIPALES DE MERCADO
@@ -195,29 +192,83 @@ st.info(
 st.markdown("---")
 
 # ---------------------------------------------------------------------
-# 2. MONTECARLO Y VAR
+# 2. MONTECARLO Y VAR (METODOLOGÍA GBM - EWMA)
 # ---------------------------------------------------------------------
-st.subheader(f"2. Análisis de Riesgo Financiero (Montecarlo {dias_analisis} días)")
-precios_futuros = simular_montecarlo_carga(df_mercado, dias_proyeccion=dias_analisis)
+st.subheader(f"2. Análisis de Riesgo Financiero (Montecarlo GBM-EWMA a {dias_analisis} días)")
 
-var_95 = np.percentile(precios_futuros, 5)
-precio_promedio_sim = np.mean(precios_futuros)
 perdida_max_por_carga = precio_carga_hoy - var_95
 perdida_total_empresa = perdida_max_por_carga * VOLUMEN_CARGAS
 
-col_a, col_b, col_c = st.columns(3)
+col_a, col_b, col_c, col_d = st.columns(4)
 col_a.metric("Precio Promedio Simulado", f"${precio_promedio_sim:,.0f} COP")
-col_b.metric("Límite Crítico (VaR 95%)", f"${var_95:,.0f} COP", delta=f"-${perdida_max_por_carga:,.0f}", delta_color="inverse")
-col_c.metric("Riesgo Máximo Empresa", f"${perdida_total_empresa/1e6:,.2f} M COP", delta_color="inverse")
+col_b.metric("TRM Promedio Simulada", f"${trm_promedio_sim:,.2f} COP")
+col_c.metric("Límite Crítico (VaR 95%)", f"${var_95:,.0f} COP", delta=f"-${perdida_max_por_carga:,.0f}", delta_color="inverse")
+col_d.metric("Riesgo Máximo Empresa", f"${perdida_total_empresa/1e6:,.2f} M COP", delta_color="inverse")
 
 if perdida_total_empresa > (valor_inventario_hoy * 0.07):
     st.error("🔴 **RECOMENDACIÓN:** RIESGO ALTO. Se aconseja tomar coberturas financieras (Forward u Opciones Put).")
 else:
     st.success("🟢 **RECOMENDACIÓN:** RIESGO TOLERABLE. Monitorear volatilidad de mercado.")
 
-st.markdown("#### 📈 Distribución de Escenarios Simulados")
-counts, bin_edges = np.histogram(precios_futuros, bins=30)
-st.bar_chart(pd.DataFrame({"Frecuencia": counts}, index=[f"${b:,.0f}" for b in bin_edges[:-1]]))
+# ---------------------------------------------------------------------
+# ABANICO DE PREDICCIÓN (FAN CHART)
+# ---------------------------------------------------------------------
+st.markdown("#### 📈 Abanico de Predicción Multitemporal (Fan Chart)")
+
+dias_eje = np.arange(0, dias_analisis + 1)
+p5_diario = np.percentile(trayectorias_carga, 5, axis=1)
+p25_diario = np.percentile(trayectorias_carga, 25, axis=1)
+p50_diario = np.percentile(trayectorias_carga, 50, axis=1)
+p75_diario = np.percentile(trayectorias_carga, 75, axis=1)
+p95_diario = np.percentile(trayectorias_carga, 95, axis=1)
+
+fig = go.Figure()
+
+# Banda 90% Confianza (P5 a P95)
+fig.add_trace(go.Scatter(
+    x=np.concatenate([dias_eje, dias_eje[::-1]]),
+    y=np.concatenate([p95_diario, p5_diario[::-1]]),
+    fill='toself',
+    fillcolor='rgba(30, 58, 138, 0.15)',
+    line=dict(color='rgba(255,255,255,0)'),
+    hoverinfo="skip",
+    name="Estrés / Volatilidad (90%)"
+))
+
+# Banda 50% Confianza (P25 a P75)
+fig.add_trace(go.Scatter(
+    x=np.concatenate([dias_eje, dias_eje[::-1]]),
+    y=np.concatenate([p75_diario, p25_diario[::-1]]),
+    fill='toself',
+    fillcolor='rgba(30, 58, 138, 0.30)',
+    line=dict(color='rgba(255,255,255,0)'),
+    hoverinfo="skip",
+    name="Alta Probabilidad (50%)"
+))
+
+# Mediana (P50)
+fig.add_trace(go.Scatter(
+    x=dias_eje, y=p50_diario,
+    mode='lines',
+    line=dict(color='#2563EB', width=3),
+    name="Tendencia Esperada (P50%)"
+))
+
+# Línea base hoy
+fig.add_shape(
+    type="line", x0=0, x1=dias_analisis, y0=precio_carga_hoy, y1=precio_carga_hoy,
+    line=dict(color="#10B981", width=2, dash="dash")
+)
+
+fig.update_layout(
+    title=f"Proyección de Precios de Carga a {dias_analisis} Días",
+    xaxis_title="Días Proyectados",
+    yaxis_title="Precio Carga (COP)",
+    hovermode="x unified",
+    margin=dict(l=20, r=20, t=40, b=20)
+)
+
+st.plotly_chart(fig, use_container_width=True)
 
 st.markdown("---")
 
@@ -258,21 +309,4 @@ st.markdown("---")
 # 4. COTIZACIONES REALES DE OPCIONES PUT
 # ---------------------------------------------------------------------
 st.subheader(f"4. Cotizaciones Reales de Mercado para Opciones Put ({TENOR_ANALISIS.upper()})")
-
-opciones = COTIZACIONES_PUT_COP.get(TENOR_ANALISIS, [])
-filas = []
-
-for op in opciones:
-    strike = op["strike"]
-    prima = op["prima"]
-    escenarios_reales = np.maximum(strike - precios_futuros, 0.0) + precios_futuros - prima
-    filas.append({
-        "Strike (COP)": f"${strike:,.0f}",
-        "Prima (COP)": f"${prima:,.0f}",
-        "Piso Neto (COP)": f"${strike - prima:,.0f}",
-        "Promedio Simulado": f"${np.mean(escenarios_reales):,.0f}",
-        "VaR 95% Cobertura": f"${np.percentile(escenarios_reales, 5):,.0f}",
-        "Costo Seguro Total": f"${(prima * VOLUMEN_CARGAS)/1e6:,.2f} M COP"
-    })
-
-st.dataframe(pd.DataFrame(filas), use_container_width=True)
+st.dataframe(proyecciones['df_cotizaciones'], use_container_width=True)
