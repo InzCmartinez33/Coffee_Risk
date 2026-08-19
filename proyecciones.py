@@ -7,7 +7,7 @@ def calcular_proyecciones(parametros: dict) -> pd.DataFrame:
     Retorna un DataFrame de Pandas con los resultados.
     """
     # Aquí va la lógica interna que ya tenías lista
-    meses = pd.date_range(start='2026-01-01', periods=12, freq='M')
+    meses = pd.date_range(start='2026-01-01', periods=12, freq='ME')
     datos = {
         'Fecha': meses,
         'Proyeccion_Ventas': np.random.randint(100, 500, size=12),
