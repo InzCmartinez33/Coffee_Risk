@@ -3,7 +3,7 @@ import requests
 import pandas as pd
 
 def actualizar_datos_trm():
-    url = "https://www.datos.gov.co/resource/32sa-213a.json?$order=vigenciasta%20DESC&$limit=30"
+    url = "https://www.datos.gov.co/resource/32sa-8pi3.json"
     try:
         response = requests.get(url, timeout=10)
         response.raise_for_status()
