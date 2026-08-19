@@ -1,5 +1,4 @@
-# Creamos el archivo app.py con el factor de rendimiento incluido en la barra lateral y en los cálculos
-app_code = '''import streamlit as st
+import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -41,7 +40,6 @@ if USA_FACTOR_RENDIMIENTO:
     )
     # Fórmula técnica del sector cafetero colombiano:
     # Libras de excelso por carga de 125 kg pergamino = (125 / Factor) * 70 kg * 2.20462 lbs/kg
-    # Simplificado: (125 / Factor) * 154.3234 lbs
     LIBRAS_POR_CARGA = (125.0 / FACTOR_RENDIMIENTO) * 70.0 * 2.20462262
     st.sidebar.info(f"💡 **Libras de excelso por carga:** {LIBRAS_POR_CARGA:.2f} lbs")
 else:
@@ -372,7 +370,3 @@ if exito:
         st.dataframe(df_opciones_display, use_container_width=True)
     else:
         st.info("No hay cotizaciones disponibles para este tenor.")
-'''
-
-compile(app_code, filename="app.py", mode="exec")
-print("Código validado correctamente con la integración del Factor de Rendimiento.")
