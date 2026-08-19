@@ -1,234 +1,354 @@
 import streamlit as st
-import numpy as np
+import yfinance as yf
 import pandas as pd
-import matplotlib.pyplot as plt
-import matplotlib.gridspec as gridspec
+import numpy as np
 import requests
+import time
+import os
+from datetime import datetime, timedelta
 
-# Configuración inicial de la página
+# =====================================================================
+# CONFIGURACIÓN DE LA PÁGINA DE STREAMLIT
+# =====================================================================
 st.set_page_config(
-    page_title="Simulador P&G y TRM Café",
+    page_title="RiskCafe Engine - Análisis de Riesgo Financiero",
     page_icon="☕",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
-# ==============================================================================
-# 1. PARÁMETROS CORE FNC Y CONSULTAS EN VIVO DE TRM
-# ==============================================================================
-FACTOR_RENDIMIENTO_BASE = 92.8
-PRIMA_COLOMBIA_LBS = 0.15
-DESCUENTO_PASILLA_COP = 25000
+st.title("☕ RiskCafe Engine - Gestión de Riesgo para Café")
+st.markdown("Herramienta de simulación de Montecarlo y evaluación de coberturas financieras (Hedging) para exportadores de café en Colombia.")
 
-@st.cache_data(ttl=1800)  # Guarda los datos en caché por 30 minutos
-def obtener_historico_trm(dias_atras=30):
-    """
-    Obtiene la TRM actual y consulta los últimos N días desde la API de Datos Abiertos
-    para calcular Mínimos, Máximos y Promedios Históricos.
-    """
-    url = f"https://www.datos.gov.co/resource/32sa-213a.json?$order=vigenciasta%20DESC&$limit={dias_atras}"
-    try:
-        response = requests.get(url, timeout=5)
-        response.raise_for_status()
-        data = response.json()
-        df = pd.DataFrame(data)
-        df['valor'] = df['valor'].astype(float)
-        
-        trm_actual = df.iloc[0]['valor']
-        trm_min_hist = df['valor'].min()
-        trm_max_hist = df['valor'].max()
-        trm_prom_hist = df['valor'].mean()
-        
-        return {
-            'actual': trm_actual,
-            'min': trm_min_hist,
-            'max': trm_max_hist,
-            'prom': trm_prom_hist,
-            'status': True
-        }
-    except Exception as e:
-        # Fallback de seguridad en caso de fallo de conexión/API
-        return {
-            'actual': 3950.0,
-            'min': 3800.0,
-            'max': 4100.0,
-            'prom': 3950.0,
-            'status': False
-        }
+# =====================================================================
+# SIDEBAR / CONFIGURACIÓN DE PARÁMETROS INTERACTIVOS
+# =====================================================================
+st.sidebar.header("⚙️ Parámetros de Operación")
 
-def calcular_precio_carga_fnc(cafe_ny_cents, trm, factor_rendimiento=92.8, prima_colombia=0.15):
-    """Fórmula oficial FNC para calcular el precio por Carga de 125 kg."""
-    cafe_ny_usd = cafe_ny_cents / 100.0
-    precio_fob_usd_lb = cafe_ny_usd + prima_colombia
-    libras_exportables = (125.0 / factor_rendimiento) * 70.0 * 2.20462
-    valor_exportable_cop = libras_exportables * precio_fob_usd_lb * trm
-    return valor_exportable_cop + DESCUENTO_PASILLA_COP
+DIFERENCIAL_CALIDAD_USD_LB = st.sidebar.number_input(
+    "Diferencial de Calidad (USD/lb)",
+    value=0.08, step=0.01, format="%.2f",
+    help="Prima o descuento sobre el contrato KC=F de la Bolsa de NY."
+)
 
-# ==============================================================================
-# 2. BARRA LATERAL (ENTRADAS DE DATOS E HISTÓRICO TRM)
-# ==============================================================================
-st.sidebar.header("⚙️ Configuración del Mercado")
+COSTOS_EXPORTACION_USD_LB = st.sidebar.number_input(
+    "Costos de Exportación (USD/lb)",
+    value=0.12, step=0.01, format="%.2f",
+    help="Logística, trilla, empaque, comisiones, seguros, etc."
+)
 
-# Cargar histórico de TRM automáticamente
-dias_analisis = st.sidebar.slider("Días de histórico TRM a consultar", 7, 90, 30)
-trm_info = obtener_historico_trm(dias_analisis)
+LIBRAS_POR_CARGA = st.sidebar.number_input(
+    "Libras por Carga (125 kg)",
+    value=96.25, step=0.25, format="%.2f",
+    help="Libras de café verde excelso por carga de 125 kg."
+)
 
-if trm_info['status']:
-    st.sidebar.success(f"✅ TRM Hoy: **${trm_info['actual']:,.2f} COP**")
-else:
-    st.sidebar.warning("⚠️ Usando valores fallback para TRM")
+VOLUMEN_CARGAS = st.sidebar.number_input(
+    "Volumen de la Cosecha/Inventario (Cargas)",
+    value=180, step=10, min_value=1
+)
 
-# Parámetros del Proyector de TRM trayendo Máximos y Mínimos automáticos
-st.sidebar.subheader("📌 Rangos de Simulación TRM")
-trm_min = st.sidebar.number_input("TRM Mínima ($)", value=float(np.floor(trm_info['min'])))
-trm_max = st.sidebar.number_input("TRM Máxima ($)", value=float(np.ceil(trm_info['max'])))
+TENOR_ANALISIS = st.sidebar.selectbox(
+    "Plazo / Horizonte de Análisis",
+    options=["1m", "3m", "6m"],
+    index=0,
+    format_func=lambda x: {"1m": "1 Mes (30 días)", "3m": "3 Meses (90 días)", "6m": "6 Meses (180 días)"}[x]
+)
 
-st.sidebar.caption(f"Histórico ({dias_analisis}d): Mín: ${trm_info['min']:,.0f} | Máx: ${trm_info['max']:,.0f}")
+TENOR_A_DIAS = {"1m": 30, "3m": 90, "6m": 180}
+dias_analisis = TENOR_A_DIAS[TENOR_ANALISIS]
 
-st.sidebar.subheader("☕ Precio Bolsa NY (c/lb)")
-cafe_min = st.sidebar.number_input("Bolsa NY Mínimo", value=210.0)
-cafe_max = st.sidebar.number_input("Bolsa NY Máximo", value=260.0)
+st.sidebar.markdown("---")
+st.sidebar.header("🛡️ Parámetros de Cobertura")
 
-st.sidebar.subheader("📦 Volumen y Coberturas Banco")
-cargas_a_vender = st.sidebar.number_input("Cargas a comercializar (125kg)", value=100, step=10)
+FORWARD_SPREAD_COP_USD = st.sidebar.number_input(
+    "Spread Forward Bancario (COP/USD)",
+    value=15.0, step=1.0, format="%.1f"
+)
 
-fwd_30 = st.sidebar.number_input("TRM Forward 30D ($)", value=round(trm_info['actual'] + 30, 0))
-costo_30 = st.sidebar.number_input("Costo Cobertura 30D ($)", value=15.0)
+OPCION_PUT_PCT_PRIMA = st.sidebar.number_input(
+    "Prima Teórica Put (% del portafolio)",
+    value=4.0, step=0.5, format="%.1f"
+) / 100.0
 
-fwd_60 = st.sidebar.number_input("TRM Forward 60D ($)", value=round(trm_info['actual'] + 65, 0))
-costo_60 = st.sidebar.number_input("Costo Cobertura 60D ($)", value=28.0)
+OPCION_PUT_COMISION_BROKER_USD = st.sidebar.number_input(
+    "Comisión Broker Put (USD)",
+    value=50.0, step=5.0
+)
 
-fwd_90 = st.sidebar.number_input("TRM Forward 90D ($)", value=round(trm_info['actual'] + 100, 0))
-costo_90 = st.sidebar.number_input("Costo Cobertura 90D ($)", value=42.0)
+# =====================================================================
+# COTIZACIONES REALES DE MERCADO — OPCIONES PUT
+# =====================================================================
+COTIZACIONES_PUT_COP = {
+    "1m": [
+        {"strike": 2_420_000, "prima": 168_000},
+        {"strike": 2_520_000, "prima": 221_000},
+        {"strike": 2_620_000, "prima": 221_000},
+    ],
+    "3m": [
+        {"strike": 2_420_000, "prima": 168_000},
+        {"strike": 2_520_000, "prima": 221_000},
+        {"strike": 2_620_000, "prima": 221_000},
+    ],
+    "6m": [
+        {"strike": 2_420_000, "prima": 168_000},
+        {"strike": 2_520_000, "prima": 221_000},
+        {"strike": 2_620_000, "prima": 221_000},
+    ],
+}
 
-# ==============================================================================
-# 3. CUERPO PRINCIPAL Y MOTOR MONTE CARLO
-# ==============================================================================
-st.title("☕ Simulador de Riesgo y P&G Cafetero")
-st.markdown("Herramienta interactiva para la proyección de ingresos y análisis de coberturas cambarias en Colombia.")
+PERIODOS_A_DIAS = {
+    "5d": 5, "1mo": 31, "3mo": 92, "6mo": 183,
+    "1y": 366, "2y": 731, "5y": 1827, "10y": 3653,
+    "ytd": 366, "max": 5000,
+}
 
-if st.button("🚀 Ejecutar Simulaciones Monte Carlo", type="primary"):
-    simulaciones = 10000
-    
-    # A. Generación de matriz de Monte Carlo usando límites ajustados
-    trm_sim = np.random.triangular(trm_min, (trm_min + trm_max)/2, trm_max, size=simulaciones)
-    cafe_sim = np.random.triangular(cafe_min, (cafe_min + cafe_max)/2, cafe_max, size=simulaciones)
-    
-    carga_sim = calcular_precio_carga_fnc(cafe_sim, trm_sim)
-    
-    p5_unit = np.percentile(carga_sim, 5)
-    p50_unit = np.percentile(carga_sim, 50)
-    cafe_mediana = (cafe_min + cafe_max) / 2
-    
-    # B. Cálculos de Forwards
-    datos_forwards = {
-        "30 días": {"fwd": fwd_30, "costo": costo_30},
-        "60 días": {"fwd": fwd_60, "costo": costo_60},
-        "90 días": {"fwd": fwd_90, "costo": costo_90}
+# =====================================================================
+# FUNCIONES DE OBTENCIÓN Y PROCESAMIENTO DE DATOS
+# =====================================================================
+@st.cache_data(ttl=3600)
+def obtener_trm_oficial(fecha_inicio):
+    url = "https://www.datos.gov.co/resource/32sa-8pi3.json"
+    params = {
+        "$where": f"vigenciadesde >= '{fecha_inicio.strftime('%Y-%m-%dT00:00:00.000')}'",
+        "$order": "vigenciadesde ASC",
+        "$limit": 2000,
     }
-    
-    fwds_calc = {}
-    for plazo, datos in datos_forwards.items():
-        trm_efec = datos["fwd"] - datos["costo"]
-        bruto_u = calcular_precio_carga_fnc(cafe_mediana, datos["fwd"])
-        
-        libras_exp = (125.0 / FACTOR_RENDIMIENTO_BASE) * 70.0 * 2.20462
-        precio_fob_usd = (cafe_mediana / 100.0) + PRIMA_COLOMBIA_LBS
-        costo_c_u = libras_exp * precio_fob_usd * datos["costo"]
-        neto_u = bruto_u - costo_c_u
-        
-        fwds_calc[plazo] = {
-            'trm_efectiva': trm_efec,
-            'carga_neto': neto_u,
-            'ingreso_bruto_total': bruto_u * cargas_a_vender,
-            'costo_total': costo_c_u * cargas_a_vender,
-            'ingreso_neto_total': neto_u * cargas_a_vender
-        }
+    resp = requests.get(url, params=params, timeout=15)
+    resp.raise_for_status()
+    registros = resp.json()
 
-    ingreso_spot_estres = p5_unit * cargas_a_vender
-    ingreso_spot_mediana = p50_unit * cargas_a_vender
+    if not registros:
+        raise ValueError("La API oficial de TRM (datos.gov.co) no devolvió registros.")
 
-    # C. Renderizado del Dashboard de Matplotlib
-    fig = plt.figure(figsize=(15, 10), facecolor='#F8FAFC')
-    gs = gridspec.GridSpec(2, 2, height_ratios=[1.1, 1], width_ratios=[1.15, 1])
-    colores_fwd = {'30 días': '#2563EB', '60 días': '#7C3AED', '90 días': '#D97706'}
-    
-    # Cuadrante 1: Histograma
-    ax1 = fig.add_subplot(gs[0, 0])
-    ax1.hist(carga_sim * cargas_a_vender / 1e6, bins=45, color='#94A3B8', alpha=0.5, edgecolor='white')
-    ax1.axvline(ingreso_spot_estres / 1e6, color='#EF4444', linestyle=':', label=f'P5 Estrés (${ingreso_spot_estres:,.0f})')
-    ax1.axvline(ingreso_spot_mediana / 1e6, color='#10B981', linestyle='--', label=f'P50 Mediana (${ingreso_spot_mediana:,.0f})')
-    for p, info in fwds_calc.items():
-        ax1.axvline(info['ingreso_neto_total'] / 1e6, color=colores_fwd[p], label=f'Fwd {p} Neto')
-    ax1.set_title(f"1. Distribución Monte Carlo ({cargas_a_vender:,} Cargas)", fontweight='bold')
-    ax1.set_xlabel("Ingresos Totales (Millones COP)")
-    ax1.legend(fontsize=8)
+    df = pd.DataFrame(registros)
+    df["fecha"] = pd.to_datetime(df["vigenciadesde"]).dt.normalize()
+    df["trm"] = df["valor"].astype(float)
+    return df.set_index("fecha")[["trm"]]
 
-    # Cuadrante 2: Mapa de Sensibilidad (RESTAURADO)
-    ax2 = fig.add_subplot(gs[0, 1])
-    scatter = ax2.scatter(cafe_sim, trm_sim, c=carga_sim/1e6, cmap='YlGnBu', alpha=0.35, s=10)
-    cbar = fig.colorbar(scatter, ax=ax2)
-    cbar.set_label('Precio Carga Spot (M COP)', rotation=270, labelpad=15)
-    for p, info in fwds_calc.items():
-        ax2.axhline(info['trm_efectiva'], color=colores_fwd[p], linestyle='--', label=f'TRM Efec. {p} (${info["trm_efectiva"]:,.0f})')
-    ax2.set_title("2. Mapa de Sensibilidad Mercado Spot vs TRM Pactada", fontweight='bold')
-    ax2.set_xlabel("Bolsa NY (Cents / lb)")
-    ax2.set_ylabel("TRM ($ COP)")
-    ax2.legend(fontsize=8)
+def _normalizar_indice_fechas(indice):
+    idx = pd.to_datetime(indice)
+    if idx.tz is not None:
+        idx = idx.tz_convert(None)
+    return idx.normalize()
 
-    # Cuadrante 3: Tabla P&G Gráfica
-    ax3 = fig.add_subplot(gs[1, 0])
-    ax3.axis('off')
-    
-    columnas = ['Concepto', 'Spot (P50)', 'Fwd 30D', 'Fwd 60D', 'Fwd 90D']
-    filas = [
-        ['TRM Efec.', f"${trm_info['actual']:,.0f}", f"${fwds_calc['30 días']['trm_efectiva']:,.0f}", f"${fwds_calc['60 días']['trm_efectiva']:,.0f}", f"${fwds_calc['90 días']['trm_efectiva']:,.0f}"],
-        ['$/Carga Neto', f"${p50_unit:,.0f}", f"${fwds_calc['30 días']['carga_neto']:,.0f}", f"${fwds_calc['60 días']['carga_neto']:,.0f}", f"${fwds_calc['90 días']['carga_neto']:,.0f}"],
-        ['Ing. Bruto', f"${ingreso_spot_mediana:,.0f}", f"${fwds_calc['30 días']['ingreso_bruto_total']:,.0f}", f"${fwds_calc['60 días']['ingreso_bruto_total']:,.0f}", f"${fwds_calc['90 días']['ingreso_bruto_total']:,.0f}"],
-        ['Costo Cobertura', "$0", f"-${fwds_calc['30 días']['costo_total']:,.0f}", f"-${fwds_calc['60 días']['costo_total']:,.0f}", f"-${fwds_calc['90 días']['costo_total']:,.0f}"],
-        ['ING. NETO P&G', f"${ingreso_spot_mediana:,.0f}", f"${fwds_calc['30 días']['ingreso_neto_total']:,.0f}", f"${fwds_calc['60 días']['ingreso_neto_total']:,.0f}", f"${fwds_calc['90 días']['ingreso_neto_total']:,.0f}"],
-        ['Dif. vs Spot', "$0", f"${fwds_calc['30 días']['ingreso_neto_total'] - ingreso_spot_mediana:,.0f}", f"${fwds_calc['60 días']['ingreso_neto_total'] - ingreso_spot_mediana:,.0f}", f"${fwds_calc['90 días']['ingreso_neto_total'] - ingreso_spot_mediana:,.0f}"]
-    ]
-    
-    tabla = ax3.table(cellText=filas, colLabels=columnas, loc='center', cellLoc='center')
-    tabla.auto_set_font_size(False)
-    tabla.set_fontsize(8)
-    tabla.scale(1, 1.3)
-    
-    for (i, j), cell in tabla.get_celld().items():
-        if i == 0:
-            cell.set_facecolor('#1E293B')
-            cell.get_text().set_color('white')
-            cell.get_text().set_weight('bold')
-        elif i == 4:
-            cell.set_facecolor('#E0F2FE')
-            cell.get_text().set_weight('bold')
+@st.cache_data(ttl=3600)
+def obtener_datos_mercado(periodo="1y", cache_path="cache_mercado.csv"):
+    dias_historia = PERIODOS_A_DIAS.get(periodo, 366)
+    fecha_inicio = datetime.now() - timedelta(days=dias_historia)
 
-    ax3.set_title("3. Estado de Pérdidas y Ganancias (P&G) Comparativo", fontweight='bold')
+    try:
+        from curl_cffi import requests as curl_requests
+        sesion_yahoo = curl_requests.Session(impersonate="chrome")
+    except ImportError:
+        sesion_yahoo = requests.Session()
+        sesion_yahoo.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
+        })
 
-    # Cuadrante 4: Cuadro de Control y Riesgo
-    ax4 = fig.add_subplot(gs[1, 1])
-    ax4.axis('off')
-    
-    texto_resumen = (
-        f"📊 RESUMEN DE COBERTURA Y PROTECCIÓN\n"
-        f"_________________________________________________\n\n"
-        f"• TRM Promedio Últimos {dias_analisis} Días: ${trm_info['prom']:,.2f} COP\n"
-        f"• Piso de Protección Estrés (P5 Spot): ${ingreso_spot_estres:,.0f} COP\n\n"
-        f"🛡️ CAPITAL PROTEGIDO CONTRA CAÍDAS:\n"
-        f"  - Con Forward 30D aseguras: +${fwds_calc['30 días']['ingreso_neto_total'] - ingreso_spot_estres:,.0f} COP adicionales\n"
-        f"  - Con Forward 60D aseguras: +${fwds_calc['60 días']['ingreso_neto_total'] - ingreso_spot_estres:,.0f} COP adicionales\n"
-        f"  - Con Forward 90D aseguras: +${fwds_calc['90 días']['ingreso_neto_total'] - ingreso_spot_estres:,.0f} COP adicionales"
-    )
-    
-    ax4.text(0.05, 0.95, texto_resumen, transform=ax4.transAxes, fontsize=9.5,
-             verticalalignment='top', fontfamily='monospace',
-             bbox=dict(boxstyle='round,pad=1', facecolor='#F1F5F9', edgecolor='#CBD5E1'))
+    try:
+        t = yf.Ticker("KC=F", session=sesion_yahoo)
+        df_cafe = t.history(period=periodo)
 
-    plt.tight_layout()
-    st.pyplot(fig)
+        if df_cafe.empty:
+            raise ValueError("No se encontraron datos para el café (KC=F).")
 
-    # Tarjetas Métricas Rápidas
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Ingreso Esperado (Spot Mediana)", f"${ingreso_spot_mediana:,.0f} COP")
-    c2.metric("Ingreso Garantizado (Fwd 90D)", f"${fwds_calc['90 días']['ingreso_neto_total']:,.0f} COP")
-    c3.metric("Capital Protegido vs Estrés", f"+${fwds_calc['90 días']['ingreso_neto_total'] - ingreso_spot_estres:,.0f} COP")
+        df_trm = obtener_trm_oficial(fecha_inicio)
+
+        datos_cafe = df_cafe[["Close"]].rename(columns={"Close": "cafe"})
+        datos_cafe.index = _normalizar_indice_fechas(datos_cafe.index)
+
+        datos = datos_cafe.join(df_trm, how="inner").dropna()
+        if datos.empty:
+            raise ValueError("No hubo fechas en común entre el café y la TRM.")
+
+        try:
+            datos.to_csv(cache_path)
+        except Exception:
+            pass
+
+        return datos, {"fuente": "yahoo_finance + datos.gov.co", "timestamp": datetime.now()}
+
+    except Exception as e:
+        if os.path.exists(cache_path):
+            timestamp_cache = datetime.fromtimestamp(os.path.getmtime(cache_path))
+            datos_cache = pd.read_csv(cache_path, index_col=0, parse_dates=True)
+            return datos_cache, {"fuente": "cache_local", "timestamp": timestamp_cache}
+        raise RuntimeError(f"Error descargando datos y no hay caché local: {e}")
+
+def calcular_precio_interno_referencia(precio_ny_centavos, trm):
+    precio_ny_usd_lb = precio_ny_centavos / 100
+    precio_neto_usd_lb = precio_ny_usd_lb + DIFERENCIAL_CALIDAD_USD_LB - COSTOS_EXPORTACION_USD_LB
+    precio_carga_cop = precio_neto_usd_lb * trm * LIBRAS_POR_CARGA
+    return precio_carga_cop
+
+def simular_montecarlo_carga(datos_historicos, dias_proyeccion=90, simulaciones=5000, semilla=42):
+    if semilla is not None:
+        np.random.seed(semilla)
+
+    retornos = np.log(datos_historicos / datos_historicos.shift(1)).dropna()
+    media = retornos.mean().values
+    covarianza = retornos.cov().values
+
+    shocks = np.random.multivariate_normal(media, covarianza, size=(dias_proyeccion, simulaciones))
+    log_retornos_acumulados = shocks.sum(axis=0)
+
+    ultimo_cafe = datos_historicos['cafe'].iloc[-1]
+    ultima_trm = datos_historicos['trm'].iloc[-1]
+
+    cafe_final = ultimo_cafe * np.exp(log_retornos_acumulados[:, 0])
+    trm_final = ultima_trm * np.exp(log_retornos_acumulados[:, 1])
+
+    return calcular_precio_interno_referencia(cafe_final, trm_final)
+
+def simular_forward(precios_carga_simulados, precio_carga_actual, trm_actual):
+    dolares_por_carga = precio_carga_actual / trm_actual
+    costo_transaccion_por_carga = FORWARD_SPREAD_COP_USD * dolares_por_carga
+    precio_pactado = precio_carga_actual - costo_transaccion_por_carga
+    escenarios_netos = np.full_like(precios_carga_simulados, precio_pactado, dtype=float)
+    return escenarios_netos, precio_pactado, costo_transaccion_por_carga
+
+def simular_opcion_put(precios_carga_simulados, precio_carga_actual, trm_actual):
+    strike_price = precio_carga_actual
+    valor_total_portafolio = precio_carga_actual * VOLUMEN_CARGAS
+    costo_prima_total_cop = valor_total_portafolio * OPCION_PUT_PCT_PRIMA
+    comision_total_cop = OPCION_PUT_COMISION_BROKER_USD * trm_actual
+    costo_seguro_por_carga = (costo_prima_total_cop + comision_total_cop) / VOLUMEN_CARGAS
+
+    precios_carga_simulados = np.asarray(precios_carga_simulados, dtype=float)
+    payoff = np.maximum(strike_price - precios_carga_simulados, 0.0)
+    escenarios_netos = precios_carga_simulados + payoff - costo_seguro_por_carga
+
+    return escenarios_netos, strike_price, costo_seguro_por_carga
+
+def simular_opcion_put_mercado(precios_carga_simulados, strike, prima):
+    precios_carga_simulados = np.asarray(precios_carga_simulados, dtype=float)
+    payoff = np.maximum(strike - precios_carga_simulados, 0.0)
+    return precios_carga_simulados + payoff - prima
+
+def evaluar_opciones_put_mercado(precios_carga_simulados, tenor):
+    opciones = COTIZACIONES_PUT_COP.get(tenor, [])
+    resultados = []
+    for opcion in opciones:
+        strike = opcion["strike"]
+        prima = opcion["prima"]
+        escenarios = simular_opcion_put_mercado(precios_carga_simulados, strike, prima)
+        resultados.append({
+            "strike": strike,
+            "prima": prima,
+            "piso_neto": strike - prima,
+            "promedio": np.mean(escenarios),
+            "var_95": np.percentile(escenarios, 5),
+            "peor_caso": np.min(escenarios),
+            "mejor_caso": np.max(escenarios),
+        })
+    return resultados
+
+# =====================================================================
+# EJECUCIÓN PRINCIPAL EN STREAMLIT
+# =====================================================================
+with st.spinner("Conectando con fuentes financieras y procesando mercado..."):
+    try:
+        df_mercado, info_datos = obtener_datos_mercado()
+        exito = True
+    except Exception as e:
+        st.error(f"Error al cargar datos de mercado: {e}")
+        exito = False
+
+if exito:
+    precio_ny_hoy = df_mercado['cafe'].iloc[-1]
+    trm_hoy = df_mercado['trm'].iloc[-1]
+
+    precio_carga_hoy = calcular_precio_interno_referencia(precio_ny_hoy, trm_hoy)
+    valor_inventario_hoy = precio_carga_hoy * VOLUMEN_CARGAS
+
+    if info_datos["fuente"] == "cache_local":
+        st.warning(f"⚠️ Usando caché local ({info_datos['timestamp'].strftime('%Y-%m-%d %H:%M')}).")
+    else:
+        st.success("✅ Datos de mercado actualizados en tiempo real.")
+
+    # 1. Métricas Principales de Mercado
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Café NY (KC=F)", f"{precio_ny_hoy/100:.2f} USD/lb")
+    col2.metric("TRM Oficial (COP)", f"${trm_hoy:,.2f}")
+    col3.metric("Precio Carga Ref.", f"${precio_carga_hoy:,.0f} COP")
+    col4.metric("Portafolio Total", f"${valor_inventario_hoy/1e6:,.2f} M COP")
+
+    st.markdown("---")
+
+    # 2. Montecarlo y VaR
+    st.subheader(f"📊 Análisis de Riesgo Financiero (Montecarlo {dias_analisis} días)")
+
+    precios_futuros = simular_montecarlo_carga(df_mercado, dias_proyeccion=dias_analisis)
+
+    var_95 = np.percentile(precios_futuros, 5)
+    precio_promedio_sim = np.mean(precios_futuros)
+    perdida_max_por_carga = precio_carga_hoy - var_95
+    perdida_total_empresa = perdida_max_por_carga * VOLUMEN_CARGAS
+
+    col_a, col_b, col_c = st.columns(3)
+    col_a.metric("Precio Promedio Simulado", f"${precio_promedio_sim:,.0f} COP")
+    col_b.metric("Límite Crítico (VaR 95%)", f"${var_95:,.0f} COP", delta=f"-${perdida_max_por_carga:,.0f}", delta_color="inverse")
+    col_c.metric("Riesgo Máximo Empresa", f"${perdida_total_empresa/1e6:,.2f} M COP", delta_color="inverse")
+
+    if perdida_total_empresa > (valor_inventario_hoy * 0.07):
+        st.error("🔴 **RECOMENDACIÓN:** RIESGO ALTO. Se aconseja ejecutar estrategias de cobertura (Hedging).")
+    else:
+        st.success("🟢 **RECOMENDACIÓN:** RIESGO TOLERABLE. Monitorear volatilidad de mercado.")
+
+    st.markdown("---")
+
+    # Gráfico de Distribución de Escenarios
+    st.subheader("📈 Distribución de Escenarios Simulados")
+    counts, bin_edges = np.histogram(precios_futuros, bins=40)
+    chart_df = pd.DataFrame({"Frecuencia": counts}, index=[f"${b:,.0f}" for b in bin_edges[:-1]])
+    st.bar_chart(chart_df)
+
+    st.markdown("---")
+
+    # 3. Coberturas Teóricas
+    st.subheader("🛡️ Comparación de Coberturas Teóricas")
+
+    escenarios_forward, precio_pactado, costo_forward = simular_forward(precios_futuros, precio_carga_hoy, trm_hoy)
+    escenarios_put, strike_put, costo_put = simular_opcion_put(precios_futuros, precio_carga_hoy, trm_hoy)
+
+    tab1, tab2, tab3 = st.tabs(["Sin Cobertura (Spot)", "Forward NDF", "Opción Put (Teórica)"])
+
+    with tab1:
+        st.write("**Posición expuesta 100% al mercado**")
+        st.write(f"- **Ingreso Promedio:** ${np.mean(precios_futuros):,.0f} COP/carga")
+        st.write(f"- **Piso (VaR 95%):** ${var_95:,.0f} COP/carga")
+        st.write(f"- **Rango:** ${np.min(precios_futuros):,.0f} - ${np.max(precios_futuros):,.0f} COP/carga")
+
+    with tab2:
+        st.write("**Fijación de precio total**")
+        st.write(f"- **Precio Pactado Garantizado:** ${precio_pactado:,.0f} COP/carga")
+        st.write(f"- **Costo Spread Bancario:** ${costo_forward:,.0f} COP/carga")
+        st.write(f"- **Ingreso Total Garantizado:** ${(precio_pactado * VOLUMEN_CARGAS)/1e6:,.2f} M COP")
+
+    with tab3:
+        st.write("**Seguro de precio mínimo**")
+        st.write(f"- **Piso Neto Garantizado:** ${(strike_put - costo_put):,.0f} COP/carga")
+        st.write(f"- **Costo Prima Estimado:** ${costo_put:,.0f} COP/carga")
+        st.write(f"- **Ingreso Promedio Neto:** ${np.mean(escenarios_put):,.0f} COP/carga")
+
+    st.markdown("---")
+
+    # 4. Cotizaciones Reales
+    st.subheader(f"💰 Cotizaciones Reales de Mercado para Opciones Put ({TENOR_ANALISIS.upper()})")
+
+    opciones_reales = evaluar_opciones_put_mercado(precios_futuros, tenor=TENOR_ANALISIS)
+    df_opciones = pd.DataFrame(opciones_reales)
+
+    if not df_opciones.empty:
+        df_opciones_display = pd.DataFrame({
+            "Strike (COP)": df_opciones["strike"].apply(lambda x: f"${x:,.0f}"),
+            "Prima (COP)": df_opciones["prima"].apply(lambda x: f"${x:,.0f}"),
+            "Piso Neto (COP)": df_opciones["piso_neto"].apply(lambda x: f"${x:,.0f}"),
+            "Promedio Simulado": df_opciones["promedio"].apply(lambda x: f"${x:,.0f}"),
+            "VaR 95% Cobertura": df_opciones["var_95"].apply(lambda x: f"${x:,.0f}"),
+            "Costo Seguro Total": (df_opciones["prima"] * VOLUMEN_CARGAS).apply(lambda x: f"${x/1e6:,.2f} M COP")
+        })
+        st.dataframe(df_opciones_display, use_container_width=True)
+    else:
+        st.info("No hay cotizaciones disponibles para este tenor.")
