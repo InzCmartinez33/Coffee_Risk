@@ -1,4 +1,5 @@
-import streamlit as st
+# Creamos el archivo app.py con el factor de rendimiento incluido en la barra lateral y en los cálculos
+app_code = '''import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -25,6 +26,31 @@ st.markdown("Herramienta de simulación de Montecarlo y evaluación de cobertura
 # =====================================================================
 st.sidebar.header("⚙️ Parámetros de Operación")
 
+# --- Factor de Rendimiento / Libras por Carga ---
+USA_FACTOR_RENDIMIENTO = st.sidebar.checkbox(
+    "Calcular por Factor de Rendimiento",
+    value=True,
+    help="Permite calcular automáticamente las libras de café excelso por carga según el factor de trilla estándar de Colombia."
+)
+
+if USA_FACTOR_RENDIMIENTO:
+    FACTOR_RENDIMIENTO = st.sidebar.number_input(
+        "Factor de Rendimiento (kg pergamino / 70 kg excelso)",
+        value=94.0, step=0.5, format="%.2f", min_value=70.0,
+        help="Sacos de 60kg de pergamino necesarios para obtener un saco de 70kg de excelso. Un factor estándar típico en Colombia es 92.8 - 94.0 kg."
+    )
+    # Fórmula técnica del sector cafetero colombiano:
+    # Libras de excelso por carga de 125 kg pergamino = (125 / Factor) * 70 kg * 2.20462 lbs/kg
+    # Simplificado: (125 / Factor) * 154.3234 lbs
+    LIBRAS_POR_CARGA = (125.0 / FACTOR_RENDIMIENTO) * 70.0 * 2.20462262
+    st.sidebar.info(f"💡 **Libras de excelso por carga:** {LIBRAS_POR_CARGA:.2f} lbs")
+else:
+    LIBRAS_POR_CARGA = st.sidebar.number_input(
+        "Libras por Carga (125 kg)",
+        value=96.25, step=0.25, format="%.2f",
+        help="Libras directas de café verde excelso por carga de 125 kg pergamino."
+    )
+
 DIFERENCIAL_CALIDAD_USD_LB = st.sidebar.number_input(
     "Diferencial de Calidad (USD/lb)",
     value=0.08, step=0.01, format="%.2f",
@@ -35,12 +61,6 @@ COSTOS_EXPORTACION_USD_LB = st.sidebar.number_input(
     "Costos de Exportación (USD/lb)",
     value=0.12, step=0.01, format="%.2f",
     help="Logística, trilla, empaque, comisiones, seguros, etc."
-)
-
-LIBRAS_POR_CARGA = st.sidebar.number_input(
-    "Libras por Carga (125 kg)",
-    value=96.25, step=0.25, format="%.2f",
-    help="Libras de café verde excelso por carga de 125 kg."
 )
 
 VOLUMEN_CARGAS = st.sidebar.number_input(
@@ -176,10 +196,10 @@ def obtener_datos_mercado(periodo="1y", cache_path="cache_mercado.csv"):
             return datos_cache, {"fuente": "cache_local", "timestamp": timestamp_cache}
         raise RuntimeError(f"Error descargando datos y no hay caché local: {e}")
 
-def calcular_precio_interno_referencia(precio_ny_centavos, trm):
+def calcular_precio_interno_referencia(precio_ny_centavos, trm, libras_carga=LIBRAS_POR_CARGA):
     precio_ny_usd_lb = precio_ny_centavos / 100
     precio_neto_usd_lb = precio_ny_usd_lb + DIFERENCIAL_CALIDAD_USD_LB - COSTOS_EXPORTACION_USD_LB
-    precio_carga_cop = precio_neto_usd_lb * trm * LIBRAS_POR_CARGA
+    precio_carga_cop = precio_neto_usd_lb * trm * libras_carga
     return precio_carga_cop
 
 def simular_montecarlo_carga(datos_historicos, dias_proyeccion=90, simulaciones=5000, semilla=42):
@@ -199,7 +219,7 @@ def simular_montecarlo_carga(datos_historicos, dias_proyeccion=90, simulaciones=
     cafe_final = ultimo_cafe * np.exp(log_retornos_acumulados[:, 0])
     trm_final = ultima_trm * np.exp(log_retornos_acumulados[:, 1])
 
-    return calcular_precio_interno_referencia(cafe_final, trm_final)
+    return calcular_precio_interno_referencia(cafe_final, trm_final, libras_carga=LIBRAS_POR_CARGA)
 
 def simular_forward(precios_carga_simulados, precio_carga_actual, trm_actual):
     dolares_por_carga = precio_carga_actual / trm_actual
@@ -352,3 +372,7 @@ if exito:
         st.dataframe(df_opciones_display, use_container_width=True)
     else:
         st.info("No hay cotizaciones disponibles para este tenor.")
+'''
+
+compile(app_code, filename="app.py", mode="exec")
+print("Código validado correctamente con la integración del Factor de Rendimiento.")
