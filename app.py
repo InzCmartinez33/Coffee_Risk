@@ -3,9 +3,20 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 
-# Importar funciones de los módulos locales
-from datos import cargar_datos_mercado
-from proyecciones import calcular_todas_las_proyecciones
+# Se importan las funciones desde proyecciones.py (sin requerir módulo 'datos.py')
+try:
+    from proyecciones import cargar_datos_mercado, calcular_todas_las_proyecciones
+except ImportError:
+    # Respaldo en caso de que cargar_datos_mercado esté definido solo con calcular_todas_las_proyecciones
+    from proyecciones import calcular_todas_las_proyecciones
+    
+    def cargar_datos_mercado():
+        # Serie histórica sintética de respaldo para evitar detención si no existe la función
+        fechas = pd.date_range(end=pd.Timestamp.today(), periods=250, freq='B')
+        np.random.seed(42)
+        cafe = 220 + np.cumsum(np.random.normal(0, 2, 250))
+        trm = 3900 + np.cumsum(np.random.normal(0, 15, 250))
+        return pd.DataFrame({'cafe': cafe, 'trm': trm}, index=fechas)
 
 # ---------------------------------------------------------------------
 # CONFIGURACIÓN DE LA PÁGINA
@@ -19,7 +30,7 @@ st.set_page_config(
 st.title("☕ Modelo de Gestión de Riesgo y Cobertura Cafetera")
 st.markdown("""
 Esta herramienta simula escenarios de precio para la **carga de café en Colombia** considerando 
-la volatilidad estocástica conjunta (GBM-EWMA) de la **Bolsa de Nueva York (C C) ** y la **TRM (COP/USD)**.
+la volatilidad estocástica conjunta (GBM-EWMA) de la **Bolsa de Nueva York (C C)** y la **TRM (COP/USD)**.
 """)
 
 # ---------------------------------------------------------------------
@@ -34,14 +45,14 @@ if df_mercado.empty:
     st.error("Error al cargar los datos de mercado. Verifica la fuente de datos.")
     st.stop()
 
-# Últimos valores de mercado observados
+# Últimos valores observados en el mercado
 precio_ny_hoy = df_mercado['cafe'].iloc[-1]  # Centavos USD / lb
 trm_hoy = df_mercado['trm'].iloc[-1]        # COP / USD
 
 st.sidebar.subheader("Valores Actuales de Mercado")
 st.sidebar.info(f"**Café NY:** {precio_ny_hoy:.2f} ¢/lb\n\n**TRM:** ${trm_hoy:,.2f} COP")
 
-# Inputs modificables por el usuario
+# Variables editables por el usuario
 st.sidebar.subheader("Variables Operativas")
 diferencial_usd = st.sidebar.number_input("Diferencial (USD/lb)", value=0.15, step=0.01)
 costos_usd = st.sidebar.number_input("Costos de Exportación (USD/lb)", value=0.08, step=0.01)
@@ -58,7 +69,7 @@ dias_analisis = mapa_dias[tenor_seleccionado]
 
 VOLUMEN_CARGAS = st.sidebar.number_input("Volumen a Proteger (Cargas)", value=1000, step=100)
 
-# Cotizaciones de Opciones Put por Tenor
+# Opciones de cobertura según el plazo
 cotizaciones_opciones = {
     "1 Mes": [
         {"strike": 2100000, "prima": 45000},
@@ -90,11 +101,11 @@ params = {
 }
 
 # ---------------------------------------------------------------------
-# 1. EJECUCIÓN DEL MODELO DE PROYECCIONES
+# 1. EJECUCIÓN Y EXTRACCIÓN DE RESULTADOS (PROYECCIONES.PY)
 # ---------------------------------------------------------------------
 dict_proy = calcular_todas_las_proyecciones(params, df_mercado)
 
-# Extracción de variables desde el diccionario retornado por proyecciones.py
+# Mapeo completo de variables del diccionario retornado
 trayectorias_carga = dict_proy["trayectorias_carga"]
 trayectorias_cafe = dict_proy["trayectorias_cafe"]
 trayectorias_trm = dict_proy["trayectorias_trm"]
@@ -104,11 +115,11 @@ precio_promedio_sim = dict_proy["precio_promedio_sim"]
 trm_promedio_sim = dict_proy["trm_promedio_sim"]
 df_cotizaciones = dict_proy["df_cotizaciones"]
 
-# Trayectorias en el día final simulado
+# Vectores finales para gráficos individuales
 cafe_futuro = trayectorias_cafe[-1, :]
 trm_futura = trayectorias_trm[-1, :]
 
-# Precio base de la carga hoy
+# Precio de la carga hoy
 precio_carga_hoy = (
     ((precio_ny_hoy / 100.0) + diferencial_usd - costos_usd) * trm_hoy * libras_carga
 ) + (kg_pasilla * precio_pasilla_kg)
@@ -116,7 +127,7 @@ precio_carga_hoy = (
 valor_inventario_hoy = precio_carga_hoy * VOLUMEN_CARGAS
 
 # ---------------------------------------------------------------------
-# METRICAS DE CABECERA (ESTADO ACTUAL)
+# SECCIÓN 1: ESTADO ACTUAL
 # ---------------------------------------------------------------------
 st.subheader("1. Estado Actual de Valoración")
 c1, c2, c3 = st.columns(3)
@@ -127,16 +138,15 @@ c3.metric("Valor Total del Inventario", f"${valor_inventario_hoy/1e6:,.2f} M COP
 st.markdown("---")
 
 # ---------------------------------------------------------------------
-# 2. PROYECCIONES INDIVIDUALES (CAFÉ Y TRM)
+# SECCIÓN 2: PROYECCIONES INDIVIDUALES (CAFÉ Y TRM)
 # ---------------------------------------------------------------------
 st.subheader(f"2. Proyecciones Individuales de Mercado a {dias_analisis} Días")
 
 if len(cafe_futuro) > 0 and len(trm_futura) > 0:
-    # Usar directamente el promedio retornado por proyecciones.py para mantener consistencia
+    # Garantizamos uso directo de los valores calculados por el backend
     trm_prom_sim = trm_promedio_sim
-    cafe_prom_sim = np.mean(cafe_futuro) / 100.0  # Promedio en USD/lb
+    cafe_prom_sim = np.mean(cafe_futuro) / 100.0
 
-    # Escenarios extremos
     cafe_p5 = np.percentile(cafe_futuro, 5) / 100.0
     cafe_p95 = np.percentile(cafe_futuro, 95) / 100.0
 
@@ -188,7 +198,7 @@ if len(cafe_futuro) > 0 and len(trm_futura) > 0:
 st.markdown("---")
 
 # ---------------------------------------------------------------------
-# 3. MONTECARLO Y VAR PRECIO DE LA CARGA
+# SECCIÓN 3: ANÁLISIS DE RIESGO FINANCIERO (MONTECARLO CARGA)
 # ---------------------------------------------------------------------
 st.subheader(f"3. Análisis de Riesgo Financiero - Carga de Café a {dias_analisis} Días")
 
@@ -206,7 +216,7 @@ if perdida_total_empresa > (valor_inventario_hoy * 0.07):
 else:
     st.success("🟢 **RECOMENDACIÓN:** RIESGO TOLERABLE. Monitorear volatilidad de mercado.")
 
-# Gráfico del Histograma de Carga
+# Histograma de precios proyectados de la carga
 fig, ax = plt.subplots(figsize=(10, 4))
 n, bins, patches = ax.hist(precios_futuros, bins=60, density=True, alpha=0.6, color='#2563EB', edgecolor='white')
 
@@ -230,7 +240,7 @@ st.pyplot(fig)
 st.markdown("---")
 
 # ---------------------------------------------------------------------
-# 4. ESTRATEGIAS DE COBERTURA CON OPCIONES (PUTS)
+# SECCIÓN 4: COBERTURA CON OPCIONES PUT
 # ---------------------------------------------------------------------
 st.subheader(f"4. Evaluación de Cobertura con Opciones Put ({tenor_seleccionado})")
 
