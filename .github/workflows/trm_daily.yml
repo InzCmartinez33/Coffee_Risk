@@ -4,18 +4,20 @@ on:
   schedule:
     # 1:00 AM UTC = 8:00 PM Hora Colombia (UTC-5)
     - cron: '0 1 * * *'
-  workflow_dispatch: # Permite ejecutarlo manualmente para probarlo
+  workflow_dispatch: # Permite ejecución manual
+
+permissions:
+  contents: write # Otorga permisos explícitos de escritura
 
 jobs:
   actualizar-trm:
     runs-on: ubuntu-latest
 
-    permissions:
-      contents: write # Otorga permisos de escritura para actualizar el repositorio
-
     steps:
       - name: Descargar código del repositorio
         uses: actions/checkout@v3
+        with:
+          persist-credentials: true # Clave para solucionar el Error 128
 
       - name: Configurar Python
         uses: actions/setup-python@v4
@@ -32,8 +34,8 @@ jobs:
 
       - name: Guardar cambios y subirlos a GitHub
         run: |
-          git config --global user.name "GitHub Action Bot"
-          git config --global user.email "actions@github.com"
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add datos_trm.json
           git commit -m "🤖 Auto-actualización diaria TRM [8:00 PM Colombia]" || exit 0
           git push
