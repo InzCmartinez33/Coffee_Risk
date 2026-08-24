@@ -262,7 +262,7 @@ perdida_total_empresa = perdida_max_por_carga * VOLUMEN_CARGAS
 
 col_a, col_b, col_c, col_d = st.columns(4)
 col_a.metric("Precio Promedio Simulado", f"${precio_promedio_sim:,.0f} COP")
-col_b.metric("TRM Promedio Simulada", f"${trm_promedio_sim:,.2f} COP")
+col_b.metric("TRM Promedio Simulada", f"${trm_p50:,.2f} COP")
 col_c.metric("Límite Crítico (VaR 95%)", f"${var_95:,.0f} COP", delta=f"-${perdida_max_por_carga:,.0f}", delta_color="inverse")
 col_d.metric("Riesgo Máximo Empresa", f"${perdida_total_empresa/1e6:,.2f} M COP", delta_color="inverse")
 
