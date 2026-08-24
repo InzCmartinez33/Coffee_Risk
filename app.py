@@ -7,11 +7,7 @@ from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
 
 # Importación del backend con la metodología GBM + EWMA
-from proyecciones import (
-    calcular_precio_interno_referencia,
-    ejecutar_simulacion,
-    calcular_metricas_riesgo,
-)
+from proyecciones import calcular_precio_interno_referencia, calcular_todas_las_proyecciones
 
 # =====================================================================
 # CONFIGURACIÓN DE LA PÁGINA DE STREAMLIT
@@ -137,11 +133,8 @@ def obtener_datos_mercado():
         return pd.DataFrame({"cafe": p_cafe, "trm": p_trm}, index=fechas), "FALLBACK"
 
 @st.cache_data(ttl=600, show_spinner=False)
-def ejecutar_motor_simulacion(dias_analisis, df_mercado):
-    # Única simulación GBM-EWMA. Café y TRM se proyectan aquí una sola vez;
-    # tanto la sección 2 (proyecciones individuales) como la sección 3
-    # (riesgo de la carga) parten de este mismo resultado.
-    return ejecutar_simulacion(dias_analisis, df_mercado)
+def ejecutar_motor_proyecciones(params_dict, df_mercado):
+    return calcular_todas_las_proyecciones(params_dict, df_mercado)
 
 # =====================================================================
 # EJECUCIÓN PRINCIPAL
@@ -153,42 +146,42 @@ precio_ny_hoy = df_mercado['cafe'].iloc[-1]
 trm_hoy = df_mercado['trm'].iloc[-1]
 
 precio_carga_hoy, valor_excelso_hoy, valor_pasilla_hoy = calcular_precio_interno_referencia(
-    precio_ny_hoy, trm_hoy, DIFERENCIAL_CALIDAD_USD_LB, COSTOS_EXPORTACION_USD_LB,
+    precio_ny_hoy, trm_hoy, DIFERENCIAL_CALIDAD_USD_LB, COSTOS_EXPORTACION_USD_LB, 
     LIBRAS_POR_CARGA, KG_PASILLA_POR_CARGA, PRECIO_PASILLA_COP_KG
 )
 valor_inventario_hoy = precio_carga_hoy * VOLUMEN_CARGAS
 
-# 1) SIMULACIÓN GBM-EWMA (única fuente de la proyección de café y TRM)
-with st.spinner("Ejecutando simulación GBM-EWMA en segundo plano..."):
-    simulacion = ejecutar_motor_simulacion(dias_analisis, df_mercado)
-
-trayectorias_cafe = simulacion['trayectorias_cafe']
-trayectorias_trm = simulacion['trayectorias_trm']
-
-# Precios simulados en el horizonte (t = dias_analisis): ESTA es "la proyección"
-cafe_futuro = trayectorias_cafe[dias_analisis, :]
-trm_futura = trayectorias_trm[dias_analisis, :]
-
-# 2) MÉTRICAS DE RIESGO DE LA CARGA, calculadas EXPLÍCITAMENTE a partir de
-#    cafe_futuro / trm_futura (los mismos arreglos de la proyección de la
-#    sección 2). Nada se recalcula por separado.
+# EJECUCIÓN DEL MOTOR INTERNO DE PROYECCIONES (única fuente: GBM + EWMA)
 params_simulacion = {
     'diferencial_usd': DIFERENCIAL_CALIDAD_USD_LB,
     'costos_usd': COSTOS_EXPORTACION_USD_LB,
     'libras_carga': LIBRAS_POR_CARGA,
     'kg_pasilla': KG_PASILLA_POR_CARGA,
     'precio_pasilla_kg': PRECIO_PASILLA_COP_KG,
+    'dias_analisis': dias_analisis,
     'volumen_cargas': VOLUMEN_CARGAS,
     'tenor': TENOR_ANALISIS,
-    'cotizaciones': COTIZACIONES_PUT_COP,
+    'cotizaciones': COTIZACIONES_PUT_COP
 }
 
-metricas_riesgo = calcular_metricas_riesgo(cafe_futuro, trm_futura, params_simulacion)
+with st.spinner("Ejecutando simulación GBM-EWMA en segundo plano..."):
+    proyecciones = ejecutar_motor_proyecciones(params_simulacion, df_mercado)
 
-precios_futuros = metricas_riesgo['precios_futuros']
-var_95 = metricas_riesgo['var_95']
-precio_promedio_sim = metricas_riesgo['precio_promedio_sim']
-trm_promedio_sim = metricas_riesgo['trm_promedio_sim']
+# Trayectorias simuladas de café y TRM: ÚNICA fuente de datos para todo
+# el dashboard (proyección individual Y Montecarlo de la carga).
+trayectorias_cafe = proyecciones['trayectorias_cafe']
+trayectorias_trm = proyecciones['trayectorias_trm']
+
+# Vectores simulados en el horizonte (t = dias_analisis)
+cafe_futuro = trayectorias_cafe[dias_analisis, :]
+trm_futura = trayectorias_trm[dias_analisis, :]
+
+# El precio de la carga por escenario y el VaR ya vienen calculados en el
+# backend derivándose exactamente de cafe_futuro / trm_futura de arriba.
+precios_futuros = proyecciones['precios_futuros']
+var_95 = proyecciones['var_95']
+precio_promedio_sim = proyecciones['precio_promedio_sim']
+trm_promedio_sim = proyecciones['trm_promedio_sim']
 
 # ---------------------------------------------------------------------
 # 1. MÉTRICAS PRINCIPALES DE MERCADO
@@ -213,59 +206,54 @@ st.markdown("---")
 # ---------------------------------------------------------------------
 st.subheader(f"2. Proyecciones Individuales de Mercado a {dias_analisis} Días")
 
-if len(cafe_futuro) > 0 and len(trm_futura) > 0:
-    cafe_p5 = np.percentile(cafe_futuro, 5) / 100.0
-    cafe_p50 = np.percentile(cafe_futuro, 50) / 100.0
-    cafe_p95 = np.percentile(cafe_futuro, 95) / 100.0
+cafe_p5 = np.percentile(cafe_futuro, 5) / 100.0
+cafe_p50 = np.percentile(cafe_futuro, 50) / 100.0
+cafe_p95 = np.percentile(cafe_futuro, 95) / 100.0
 
-    trm_p5 = np.percentile(trm_futura, 5)
-    trm_p50 = np.percentile(trm_futura, 50)
-    trm_p95 = np.percentile(trm_futura, 95)
+trm_p5 = np.percentile(trm_futura, 5)
+trm_p50 = np.percentile(trm_futura, 50)
+trm_p95 = np.percentile(trm_futura, 95)
 
-    col_cafe, col_trm = st.columns(2)
+col_cafe, col_trm = st.columns(2)
 
-    with col_cafe:
-        st.markdown("#### ☕ Proyección Café NY (USD/lb)")
-        st.metric("Promedio Esperado (P50)", f"${cafe_p50:.2f} USD/lb", delta=f"{(cafe_p50 - (precio_ny_hoy/100)):.2f} USD")
-        st.caption(f"📉 **Escenario Crítico (P5%):** ${cafe_p5:.2f} USD/lb")
-        st.caption(f"📈 **Escenario Alcista (P95%):** ${cafe_p95:.2f} USD/lb")
+with col_cafe:
+    st.markdown("#### ☕ Proyección Café NY (USD/lb)")
+    st.metric("Promedio Esperado (P50)", f"${cafe_p50:.2f} USD/lb", delta=f"{(cafe_p50 - (precio_ny_hoy/100)):.2f} USD")
+    st.caption(f"📉 **Escenario Crítico (P5%):** ${cafe_p5:.2f} USD/lb")
+    st.caption(f"📈 **Escenario Alcista (P95%):** ${cafe_p95:.2f} USD/lb")
 
-        fig_c, ax_c = plt.subplots(figsize=(6, 3))
-        ax_c.hist(cafe_futuro / 100.0, bins=40, color='#B45309', alpha=0.7, edgecolor='white')
-        ax_c.axvline(precio_ny_hoy/100, color='#10B981', linestyle='--', label='Hoy')
-        ax_c.axvline(cafe_p50, color='#1E3A8A', linestyle='-', label='Esperado')
-        ax_c.set_title("Distribución Café NY", fontsize=9, fontweight='bold')
-        ax_c.set_xlabel("USD / lb", fontsize=8)
-        ax_c.grid(True, alpha=0.3)
-        ax_c.legend(fontsize=7)
-        st.pyplot(fig_c)
+    fig_c, ax_c = plt.subplots(figsize=(6, 3))
+    ax_c.hist(cafe_futuro / 100.0, bins=40, color='#B45309', alpha=0.7, edgecolor='white')
+    ax_c.axvline(precio_ny_hoy/100, color='#10B981', linestyle='--', label='Hoy')
+    ax_c.axvline(cafe_p50, color='#1E3A8A', linestyle='-', label='Esperado')
+    ax_c.set_title("Distribución Café NY", fontsize=9, fontweight='bold')
+    ax_c.set_xlabel("USD / lb", fontsize=8)
+    ax_c.grid(True, alpha=0.3)
+    ax_c.legend(fontsize=7)
+    st.pyplot(fig_c)
 
-    with col_trm:
-        st.markdown("#### 💵 Proyección Dólar TRM (COP/USD)")
-        st.metric("Promedio Esperado (P50)", f"${trm_p50:,.2f} COP", delta=f"{(trm_p50 - trm_hoy):,.2f} COP")
-        st.caption(f"📉 **Escenario Crítico (P5%):** ${trm_p5:,.2f} COP")
-        st.caption(f"📈 **Escenario Alcista (P95%):** ${trm_p95:,.2f} COP")
+with col_trm:
+    st.markdown("#### 💵 Proyección Dólar TRM (COP/USD)")
+    st.metric("Promedio Esperado (P50)", f"${trm_p50:,.2f} COP", delta=f"{(trm_p50 - trm_hoy):,.2f} COP")
+    st.caption(f"📉 **Escenario Crítico (P5%):** ${trm_p5:,.2f} COP")
+    st.caption(f"📈 **Escenario Alcista (P95%):** ${trm_p95:,.2f} COP")
 
-        fig_t, ax_t = plt.subplots(figsize=(6, 3))
-        ax_t.hist(trm_futura, bins=40, color='#047857', alpha=0.7, edgecolor='white')
-        ax_t.axvline(trm_hoy, color='#10B981', linestyle='--', label='Hoy')
-        ax_t.axvline(trm_p50, color='#1E3A8A', linestyle='-', label='Esperado')
-        ax_t.set_title("Distribución TRM", fontsize=9, fontweight='bold')
-        ax_t.set_xlabel("COP / USD", fontsize=8)
-        ax_t.grid(True, alpha=0.3)
-        ax_t.legend(fontsize=7)
-        st.pyplot(fig_t)
-
-    st.caption(
-        "ℹ️ El precio de la carga de la sección 3 se calcula escenario por escenario "
-        "aplicando la fórmula de referencia directamente sobre estos mismos arreglos "
-        "de café y TRM — no es una simulación aparte."
-    )
+    fig_t, ax_t = plt.subplots(figsize=(6, 3))
+    ax_t.hist(trm_futura, bins=40, color='#047857', alpha=0.7, edgecolor='white')
+    ax_t.axvline(trm_hoy, color='#10B981', linestyle='--', label='Hoy')
+    ax_t.axvline(trm_p50, color='#1E3A8A', linestyle='-', label='Esperado')
+    ax_t.set_title("Distribución TRM", fontsize=9, fontweight='bold')
+    ax_t.set_xlabel("COP / USD", fontsize=8)
+    ax_t.grid(True, alpha=0.3)
+    ax_t.legend(fontsize=7)
+    st.pyplot(fig_t)
 
 st.markdown("---")
 
 # ---------------------------------------------------------------------
 # 3. MONTECARLO Y VAR PRECIO DE LA CARGA
+#    (construido con calcular_precio_interno_referencia aplicado a
+#     cafe_futuro / trm_futura de la sección 2 — mismo backend, misma corrida)
 # ---------------------------------------------------------------------
 st.subheader(f"3. Análisis de Riesgo Financiero - Carga de Café a {dias_analisis} días")
 
@@ -349,4 +337,4 @@ st.markdown("---")
 # 5. COTIZACIONES REALES DE OPCIONES PUT
 # ---------------------------------------------------------------------
 st.subheader(f"5. Cotizaciones Reales de Mercado para Opciones Put ({TENOR_ANALISIS.upper()})")
-st.dataframe(metricas_riesgo['df_cotizaciones'], use_container_width=True)
+st.dataframe(proyecciones['df_cotizaciones'], use_container_width=True)
