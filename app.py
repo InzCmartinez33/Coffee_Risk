@@ -186,12 +186,12 @@ trm_promedio_sim = proyecciones['trm_promedio_sim']
 # ---------------------------------------------------------------------
 # 1. MÉTRICAS PRINCIPALES DE MERCADO
 # ---------------------------------------------------------------------
-st.subheader("1. Métricas Principales de Mercado (Spot Hoy)")
+st.subheader("1. Mercado Hoy")
 col1, col2, col3, col4 = st.columns(4)
-col1.metric("Café NY (KC=F)", f"{precio_ny_hoy/100:.2f} USD/lb")
+col1.metric("Café Nueva York Hoy", f"{precio_ny_hoy/100:.2f} USD/lb")
 col2.metric("TRM Oficial (COP)", f"${trm_hoy:,.2f}")
 col3.metric("Precio Carga Ref.", f"${precio_carga_hoy:,.0f} COP")
-col4.metric("Portafolio Total", f"${valor_inventario_hoy/1e6:,.2f} M COP")
+col4.metric("Precio Total Cargas", f"${valor_inventario_hoy/1e6:,.2f} M COP")
 
 st.info(
     f"📌 **Desglose de la Carga de 125 kg:** "
@@ -204,7 +204,7 @@ st.markdown("---")
 # ---------------------------------------------------------------------
 # 2. PROYECCIONES INDIVIDUALES (CAFÉ Y TRM)
 # ---------------------------------------------------------------------
-st.subheader(f"2. Proyecciones Individuales de Mercado a {dias_analisis} Días")
+st.subheader(f"2. Proyecciones de Mercado a {dias_analisis} Días")
 
 cafe_p5 = np.percentile(cafe_futuro, 5) / 100.0
 cafe_p50 = np.percentile(cafe_futuro, 50) / 100.0
@@ -217,10 +217,10 @@ trm_p95 = np.percentile(trm_futura, 95)
 col_cafe, col_trm = st.columns(2)
 
 with col_cafe:
-    st.markdown("#### ☕ Proyección Café NY (USD/lb)")
+    st.markdown("#### ☕ Proyección Precio Internacional Café (USD/lb)")
     st.metric("Promedio Esperado (P50)", f"${cafe_p50:.2f} USD/lb", delta=f"{(cafe_p50 - (precio_ny_hoy/100)):.2f} USD")
-    st.caption(f"📉 **Escenario Crítico (P5%):** ${cafe_p5:.2f} USD/lb")
-    st.caption(f"📈 **Escenario Alcista (P95%):** ${cafe_p95:.2f} USD/lb")
+    st.caption(f"📉 **Escenario Crítico (5% de Probabilidad):** ${cafe_p5:.2f} USD/lb")
+    st.caption(f"📈 **Escenario Alcista (95% de Probabilidad):** ${cafe_p95:.2f} USD/lb")
 
     fig_c, ax_c = plt.subplots(figsize=(6, 3))
     ax_c.hist(cafe_futuro / 100.0, bins=40, color='#B45309', alpha=0.7, edgecolor='white')
@@ -235,8 +235,8 @@ with col_cafe:
 with col_trm:
     st.markdown("#### 💵 Proyección Dólar TRM (COP/USD)")
     st.metric("Promedio Esperado (P50)", f"${trm_p50:,.2f} COP", delta=f"{(trm_p50 - trm_hoy):,.2f} COP")
-    st.caption(f"📉 **Escenario Crítico (P5%):** ${trm_p5:,.2f} COP")
-    st.caption(f"📈 **Escenario Alcista (P95%):** ${trm_p95:,.2f} COP")
+    st.caption(f"📉 **Escenario Crítico (5% de Probabilidad):** ${trm_p5:,.2f} COP")
+    st.caption(f"📈 **Escenario Alcista (95% de Probabilidad):** ${trm_p95:,.2f} COP")
 
     fig_t, ax_t = plt.subplots(figsize=(6, 3))
     ax_t.hist(trm_futura, bins=40, color='#047857', alpha=0.7, edgecolor='white')
@@ -255,15 +255,15 @@ st.markdown("---")
 #    (construido con calcular_precio_interno_referencia aplicado a
 #     cafe_futuro / trm_futura de la sección 2 — mismo backend, misma corrida)
 # ---------------------------------------------------------------------
-st.subheader(f"3. Análisis de Riesgo Financiero - Carga de Café a {dias_analisis} días")
+st.subheader(f"3. Análisis de Riesgo - Producción de Café a {dias_analisis} días")
 
 perdida_max_por_carga = precio_carga_hoy - var_95
 perdida_total_empresa = perdida_max_por_carga * VOLUMEN_CARGAS
 
 col_a, col_b, col_c, col_d = st.columns(4)
-col_a.metric("Precio Promedio Simulado", f"${precio_promedio_sim:,.0f} COP")
+col_a.metric("Precio Esperado por Carga", f"${precio_promedio_sim:,.0f} COP")
 col_b.metric("TRM Promedio Simulada", f"${trm_p50:,.2f} COP")
-col_c.metric("Límite Crítico (VaR 95%)", f"${var_95:,.0f} COP", delta=f"-${perdida_max_por_carga:,.0f}", delta_color="inverse")
+col_c.metric("Escenario Critico Precio por Carga", f"${var_95:,.0f} COP", delta=f"-${perdida_max_por_carga:,.0f}", delta_color="inverse")
 col_d.metric("Riesgo Máximo Empresa", f"${perdida_total_empresa/1e6:,.2f} M COP", delta_color="inverse")
 
 if perdida_total_empresa > (valor_inventario_hoy * 0.07):
