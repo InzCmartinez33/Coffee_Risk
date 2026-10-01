@@ -38,9 +38,14 @@ if USA_FACTOR_RENDIMIENTO:
         "Factor de Rendimiento (kg pergamino / 70 kg excelso)",
         value=94.0, step=0.5, format="%.2f", min_value=70.0
     )
-    LIBRAS_POR_CARGA = (125.0 / FACTOR_RENDIMIENTO) * 70.0 * 2.20462262
+    MERMA_CASCARILLA_KG = st.sidebar.number_input(
+        "Merma por trilla / cascarilla (kg por carga)",
+        value=18.0, step=0.5, format="%.1f", min_value=0.0,
+        help="Kg de la carga de 125 kg que se pierden como cascarilla y no son excelso ni pasilla."
+    )
     KG_EXCELSO_POR_CARGA = (125.0 / FACTOR_RENDIMIENTO) * 70.0
-    KG_PASILLA_POR_CARGA = max(0.0, 125.0 - KG_EXCELSO_POR_CARGA - 18.0)
+    LIBRAS_POR_CARGA = KG_EXCELSO_POR_CARGA * 2.20462262
+    KG_PASILLA_POR_CARGA = max(0.0, 125.0 - KG_EXCELSO_POR_CARGA - MERMA_CASCARILLA_KG)
 
     st.sidebar.info(f"💡 **Excelso:** {LIBRAS_POR_CARGA:.2f} lbs ({KG_EXCELSO_POR_CARGA:.1f} kg) | **Pasilla:** {KG_PASILLA_POR_CARGA:.1f} kg")
 else:
