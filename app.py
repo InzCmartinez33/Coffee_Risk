@@ -5,6 +5,8 @@ import numpy as np
 import requests
 from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
+import os
+from cotizaciones import cargar_cotizaciones, RUTA_COTIZACIONES
 
 # Importación del backend con la metodología GBM + EWMA
 from proyecciones import calcular_precio_interno_referencia, calcular_todas_las_proyecciones
@@ -80,23 +82,16 @@ OPCION_PUT_COMISION_BROKER_USD = st.sidebar.number_input("Comisión Broker Put (
 # =====================================================================
 # COTIZACIONES REALES DE MERCADO — OPCIONES PUT
 # =====================================================================
-COTIZACIONES_PUT_COP = {
-    "1m": [
-        {"strike": 2_420_000, "prima": 168_000},
-        {"strike": 2_520_000, "prima": 221_000},
-        {"strike": 2_620_000, "prima": 221_000},
-    ],
-    "3m": [
-        {"strike": 2_420_000, "prima": 168_000},
-        {"strike": 2_520_000, "prima": 221_000},
-        {"strike": 2_620_000, "prima": 221_000},
-    ],
-    "6m": [
-        {"strike": 2_420_000, "prima": 168_000},
-        {"strike": 2_520_000, "prima": 221_000},
-        {"strike": 2_620_000, "prima": 221_000},
-    ],
-}
+@st.cache_data(show_spinner=False)
+def _leer_cotizaciones(mtime):
+    return cargar_cotizaciones()
+
+try:
+    _mtime = os.path.getmtime(RUTA_COTIZACIONES)
+    COTIZACIONES_PUT_COP = _leer_cotizaciones(_mtime)
+except (FileNotFoundError, ValueError) as e:
+    st.error(f"No se pudieron cargar las cotizaciones Put:\n\n{e}")
+    st.stop()
 
 # =====================================================================
 # FUNCIONES DE OBTENCIÓN DE DATOS
@@ -343,3 +338,5 @@ st.markdown("---")
 # ---------------------------------------------------------------------
 st.subheader(f"5. Cotizaciones Reales de Mercado para Opciones Put ({TENOR_ANALISIS.upper()})")
 st.dataframe(proyecciones['df_cotizaciones'], use_container_width=True)
+from datetime import datetime
+st.caption(f"Cotizaciones actualizadas: {datetime.fromtimestamp(_mtime):%Y-%m-%d %H:%M}")
