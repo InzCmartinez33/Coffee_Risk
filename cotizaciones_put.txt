@@ -1,0 +1,21 @@
+# ==========================================================
+# COTIZACIONES REALES DE OPCIONES PUT
+# Una cotización por línea:   plazo, strike_COP, prima_COP
+#   - plazo: 1m, 3m o 6m
+#   - Separa con coma. Escribe los números sin puntos ni comas
+#     (ej: 2420000). Se acepta $ y separadores de miles solo si
+#     usas ; como separador (ej: 1m; $2.420.000; 168.000).
+#   - Las líneas que empiezan con # se ignoran.
+# Última actualización: 2026-10-01
+# ==========================================================
+1m, 2420000, 168000
+1m, 2520000, 221000
+1m, 2620000, 221000
+
+3m, 2420000, 168000
+3m, 2520000, 221000
+3m, 2620000, 221000
+
+6m, 2420000, 168000
+6m, 2520000, 221000
+6m, 2620000, 221000
