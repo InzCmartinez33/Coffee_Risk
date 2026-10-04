@@ -280,7 +280,11 @@ with tab1:
     st.write("**Posición expuesta 100% a la volatilidad del mercado**")
     st.write(f"- **Piso (VaR 95%):** ${var_95:,.0f} COP/carga")
     st.write(f"- **Promedio Esperado:** ${precio_promedio_sim:,.0f} COP/carga")
-    st.write(f"- **Rango:** ${np.min(precios_futuros):,.0f} - ${np.max(precios_futuros):,.0f} COP/carga")
+    p5, p10, p25, p75, p90, p95 = np.percentile(precios_futuros, [5, 10, 25, 75, 90, 95])
+    st.write(f"- **Rango probable (90%, P5–P95):** ${p5:,.0f} - ${p95:,.0f} COP/carga")
+    st.write(f"- **Rango probable (80%, P10–P90):** ${p10:,.0f} - ${p90:,.0f} COP/carga")
+    st.write(f"- **Rango central (50%, P25–P75):** ${p25:,.0f} - ${p75:,.0f} COP/carga")
+    st.caption(f"Extremos simulados (casos muy raros): ${np.min(precios_futuros):,.0f} - ${np.max(precios_futuros):,.0f}")
 
 with tab2:
     st.write("**Fijación total del precio (Elimina riesgo a la baja y alza)**")
