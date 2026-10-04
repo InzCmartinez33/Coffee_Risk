@@ -6,3 +6,4 @@ requests
 curl_cffi
 plotly
 matplotlib
+scikit-learn
