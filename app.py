@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
 import os
 from cotizaciones import cargar_cotizaciones, RUTA_COTIZACIONES
+from graficos import grafico_proyeccion
 
 # Importación del backend con la metodología GBM + EWMA
 from proyecciones import calcular_precio_interno_referencia, calcular_todas_las_proyecciones
@@ -222,15 +223,10 @@ with col_cafe:
     st.caption(f"📉 **Escenario Crítico (5% de Probabilidad):** ${cafe_p5:.2f} USD/lb")
     st.caption(f"📈 **Escenario Alcista (95% de Probabilidad):** ${cafe_p95:.2f} USD/lb")
 
-    fig_c, ax_c = plt.subplots(figsize=(6, 3))
-    ax_c.hist(cafe_futuro / 100.0, bins=40, color='#B45309', alpha=0.7, edgecolor='white')
-    ax_c.axvline(precio_ny_hoy/100, color='#10B981', linestyle='--', label='Hoy')
-    ax_c.axvline(cafe_p50, color='#1E3A8A', linestyle='-', label='Esperado')
-    ax_c.set_title("Distribución Café NY", fontsize=9, fontweight='bold')
-    ax_c.set_xlabel("USD / lb", fontsize=8)
-    ax_c.grid(True, alpha=0.3)
-    ax_c.legend(fontsize=7)
-    st.pyplot(fig_c)
+        st.pyplot(grafico_proyeccion(
+        df_mercado['cafe'], trayectorias_cafe,
+        "Café NY: precio real y proyección", "USD / lb", "#B45309",
+        factor=100.0, formato="${x:,.2f}"))
 
 with col_trm:
     st.markdown("#### 💵 Proyección Dólar TRM (COP/USD)")
@@ -238,15 +234,10 @@ with col_trm:
     st.caption(f"📉 **Escenario Crítico (5% de Probabilidad):** ${trm_p5:,.2f} COP")
     st.caption(f"📈 **Escenario Alcista (95% de Probabilidad):** ${trm_p95:,.2f} COP")
 
-    fig_t, ax_t = plt.subplots(figsize=(6, 3))
-    ax_t.hist(trm_futura, bins=40, color='#047857', alpha=0.7, edgecolor='white')
-    ax_t.axvline(trm_hoy, color='#10B981', linestyle='--', label='Hoy')
-    ax_t.axvline(trm_p50, color='#1E3A8A', linestyle='-', label='Esperado')
-    ax_t.set_title("Distribución TRM", fontsize=9, fontweight='bold')
-    ax_t.set_xlabel("COP / USD", fontsize=8)
-    ax_t.grid(True, alpha=0.3)
-    ax_t.legend(fontsize=7)
-    st.pyplot(fig_t)
+        st.pyplot(grafico_proyeccion(
+        df_mercado['trm'], trayectorias_trm,
+        "TRM: precio real y proyección", "COP / USD", "#047857",
+        formato="${x:,.0f}"))
 
 st.markdown("---")
 
