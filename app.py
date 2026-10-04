@@ -223,10 +223,10 @@ with col_cafe:
     st.caption(f"📉 **Escenario Crítico (5% de Probabilidad):** ${cafe_p5:.2f} USD/lb")
     st.caption(f"📈 **Escenario Alcista (95% de Probabilidad):** ${cafe_p95:.2f} USD/lb")
 
-        st.pyplot(grafico_proyeccion(
-        df_mercado['cafe'], trayectorias_cafe,
-        "Café NY: precio real y proyección", "USD / lb", "#B45309",
-        factor=100.0, formato="${x:,.2f}"))
+    st.pyplot(grafico_proyeccion(
+    df_mercado['cafe'], trayectorias_cafe,
+    "Café NY: precio real y proyección", "USD / lb", "#B45309",
+    factor=100.0, formato="${x:,.2f}"))
 
 with col_trm:
     st.markdown("#### 💵 Proyección Dólar TRM (COP/USD)")
@@ -234,10 +234,10 @@ with col_trm:
     st.caption(f"📉 **Escenario Crítico (5% de Probabilidad):** ${trm_p5:,.2f} COP")
     st.caption(f"📈 **Escenario Alcista (95% de Probabilidad):** ${trm_p95:,.2f} COP")
 
-        st.pyplot(grafico_proyeccion(
-        df_mercado['trm'], trayectorias_trm,
-        "TRM: precio real y proyección", "COP / USD", "#047857",
-        formato="${x:,.0f}"))
+    st.pyplot(grafico_proyeccion(
+    df_mercado['trm'], trayectorias_trm,
+    "TRM: precio real y proyección", "COP / USD", "#047857",
+    formato="${x:,.0f}"))
 
 st.markdown("---")
 
