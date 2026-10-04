@@ -262,34 +262,6 @@ if perdida_total_empresa > (valor_inventario_hoy * 0.07):
 else:
     st.success("🟢 **RECOMENDACIÓN:** RIESGO TOLERABLE. Monitorear volatilidad de mercado.")
 
-# ---------------------------------------------------------------------
-# GRÁFICO DE DISTRIBUCIÓN CARGA TOTAL
-# ---------------------------------------------------------------------
-st.markdown("#### 📊 Distribución de Probabilidad del Precio de la Carga")
-
-fig, ax = plt.subplots(figsize=(10, 4))
-
-n, bins, patches = ax.hist(precios_futuros, bins=60, density=True, alpha=0.6, color='#2563EB', edgecolor='white')
-
-for i in range(len(patches)):
-    if bins[i] < var_95:
-        patches[i].set_facecolor('#DC2626')
-
-ax.axvline(precio_carga_hoy, color='#10B981', linestyle='--', linewidth=2, label=f'Precio Base Hoy (${precio_carga_hoy:,.0f})')
-ax.axvline(var_95, color='#DC2626', linestyle='-', linewidth=2, label=f'VaR 95% (${var_95:,.0f})')
-ax.axvline(precio_promedio_sim, color='#1E3A8A', linestyle=':', linewidth=2, label=f'Mediana Simulada (${precio_promedio_sim:,.0f})')
-
-ax.set_title(f"Distribución a {dias_analisis} Días (Simulación Montecarlo con Volatilidad EWMA)", fontsize=11, fontweight='bold')
-ax.set_xlabel("Precio de la Carga (COP)")
-ax.set_ylabel("Densidad de Probabilidad")
-ax.grid(True, alpha=0.3)
-ax.legend(loc='upper right')
-
-ax.xaxis.set_major_formatter('${x:,.0f}')
-
-st.pyplot(fig)
-
-st.markdown("---")
 
 # ---------------------------------------------------------------------
 # 4. COBERTURAS TEÓRICAS
