@@ -103,6 +103,9 @@ def simular_gbm_ml_trayectorias(df_mercado, max_dias=90, simulaciones=5000, seed
     # Residuos estandarizados por la vol EWMA del día previo. Se remuestrean
     # por fila para conservar correlación café-TRM y colas pesadas.
     z = pd.DataFrame({c: r[c] / _ewma_vol(r[c], EWMA_LAMBDA).shift(1) for c in COLS}).dropna()
+    z = z.iloc[30:]                       # descarta el arranque de la EWMA (vol inicial poco fiable)
+    z = (z - z.mean()) / z.std()
+    z = z.clip(-6, 6)                     # evita que un solo día extremo domine las colas
     z = (z - z.mean()) / z.std()
     Z = z.values
 
