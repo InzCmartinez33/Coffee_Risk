@@ -274,39 +274,77 @@ else:
 # ---------------------------------------------------------------------
 # 4. COBERTURAS TEÓRICAS
 # ---------------------------------------------------------------------
-st.subheader("4. Comparación de Coberturas Teóricas")
-dolares_por_carga = precio_carga_hoy / trm_hoy
-costo_forward = FORWARD_SPREAD_COP_USD * dolares_por_carga
-precio_forward = precio_carga_hoy - costo_forward
+# =====================================================================
 
-costo_put = (precio_carga_hoy * VOLUMEN_CARGAS * OPCION_PUT_PCT_PRIMA + OPCION_PUT_COMISION_BROKER_USD * trm_hoy) / VOLUMEN_CARGAS
-escenarios_put = np.maximum(precio_carga_hoy - precios_futuros, 0.0) + precios_futuros - costo_put
+st.subheader("4. P&L Esperado por Estrategia de Cobertura")
+
+vol = VOLUMEN_CARGAS
+costo_prod = COSTO_TOTAL_COSECHA
+
+# --- Parámetros de cada cobertura (misma lógica que antes) ---
+dolares_por_carga = precio_carga_hoy / trm_hoy
+costo_forward = FORWARD_SPREAD_COP_USD * dolares_por_carga                 # COP/carga
+precio_forward = precio_carga_hoy - costo_forward                          # COP/carga
+costo_put = (precio_carga_hoy * vol * OPCION_PUT_PCT_PRIMA
+             + OPCION_PUT_COMISION_BROKER_USD * trm_hoy) / vol             # COP/carga
+payoff_put = np.maximum(precio_carga_hoy - precios_futuros, 0.0)           # COP/carga, por escenario
+
+
+def _fmt(v):
+    return f"{'-' if v < 0 else ''}${abs(v) / 1e6:,.2f} M"
+
+
+def mostrar_pyl(lineas, utilidad_por_escenario, ingreso_total_esp):
+    """lineas: [(concepto, valor_COP_total)] con costos en negativo; la utilidad es la suma."""
+    utilidad_esp = sum(v for _, v in lineas)
+    filas = [{"Concepto": c, "COP (millones)": _fmt(v)} for c, v in lineas]
+    filas.append({"Concepto": "= UTILIDAD ESPERADA", "COP (millones)": _fmt(utilidad_esp)})
+    filas.append({"Concepto": "Margen sobre ingresos",
+                  "COP (millones)": f"{100 * utilidad_esp / ingreso_total_esp:.1f}%"})
+    st.dataframe(pd.DataFrame(filas), use_container_width=True, hide_index=True)
+
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Utilidad esperada", _fmt(utilidad_esp))
+    m2.metric("Utilidad en escenario crítico (P5)", _fmt(np.percentile(utilidad_por_escenario, 5)))
+    m3.metric("Probabilidad de pérdida", f"{(utilidad_por_escenario < 0).mean():.1%}")
+
 
 tab1, tab2, tab3 = st.tabs(["Sin Cobertura (Spot)", "Forward NDF", "Opción Put (Teórica)"])
 
 with tab1:
     st.write("**Posición expuesta 100% a la volatilidad del mercado**")
-    st.write(f"- **Piso (VaR 95%):** ${var_95:,.0f} COP/carga")
-    st.write(f"- **Promedio Esperado:** ${precio_promedio_sim:,.0f} COP/carga")
-    p5, p10, p25, p75, p90, p95 = np.percentile(precios_futuros, [5, 10, 25, 75, 90, 95])
-    st.write(f"- **Rango probable (90%, P5–P95):** ${p5:,.0f} - ${p95:,.0f} COP/carga")
-    st.write(f"- **Rango probable (80%, P10–P90):** ${p10:,.0f} - ${p90:,.0f} COP/carga")
-    st.write(f"- **Rango central (50%, P25–P75):** ${p25:,.0f} - ${p75:,.0f} COP/carga")
-    st.caption(f"Extremos simulados (casos muy raros): ${np.min(precios_futuros):,.0f} - ${np.max(precios_futuros):,.0f}")
+    ingreso_esp = np.mean(precios_futuros) * vol
+    util_spot = precios_futuros * vol - costo_prod
+    mostrar_pyl(
+        [("Ingreso esperado por venta", ingreso_esp),
+         ("(−) Costos de producción", -costo_prod),
+         ("(−) Costos de cobertura", 0.0)],
+        util_spot, ingreso_esp)
 
 with tab2:
-    st.write("**Fijación total del precio (Elimina riesgo a la baja y alza)**")
-    st.write(f"- **Precio Pactado Garantizado:** ${precio_forward:,.0f} COP/carga")
-    st.write(f"- **Spread Bancario Aplicado:** ${costo_forward:,.0f} COP/carga")
-    st.write(f"- **Valor Total Protegido:** ${(precio_forward * VOLUMEN_CARGAS)/1e6:,.2f} M COP")
+    st.write("**Fijación total del precio (elimina riesgo a la baja y al alza)**")
+    ingreso_fwd = precio_carga_hoy * vol
+    util_fwd = np.full(len(precios_futuros), precio_forward * vol - costo_prod)
+    mostrar_pyl(
+        [("Ingreso por venta al precio pactado", ingreso_fwd),
+         ("(−) Costos de producción", -costo_prod),
+         ("(−) Costos de cobertura (spread bancario)", -costo_forward * vol)],
+        util_fwd, ingreso_fwd)
+    st.caption("Supone que el forward fija el precio de la carga completa (café y TRM). "
+               "Un NDF sobre TRM solo cubre la parte cambiaria.")
 
 with tab3:
-    st.write("**Seguro de precio mínimo (Conserva ganancias si el café sube)**")
-    st.write(f"- **Piso Neto Garantizado:** ${(precio_carga_hoy - costo_put):,.0f} COP/carga")
-    st.write(f"- **Costo Prima Estimado:** ${costo_put:,.0f} COP/carga")
-    st.write(f"- **Ingreso Promedio Neto:** ${np.mean(escenarios_put):,.0f} COP/carga")
-
-st.markdown("---")
+    st.write("**Seguro de precio mínimo (conserva el alza si el café sube)**")
+    ingreso_put = np.mean(precios_futuros) * vol
+    util_put = (precios_futuros + payoff_put - costo_put) * vol - costo_prod
+    mostrar_pyl(
+        [("Ingreso esperado por venta", ingreso_put),
+         ("(+) Pago esperado de la opción", np.mean(payoff_put) * vol),
+         ("(−) Costos de producción", -costo_prod),
+         ("(−) Costos de cobertura (prima + comisión)", -costo_put * vol)],
+        util_put, ingreso_put)
+    st.caption("Put teórica con strike en el precio de hoy. Las cotizaciones reales con otros strikes "
+               "están en la sección 5.")
 
 # ---------------------------------------------------------------------
 # 5. COTIZACIONES REALES DE OPCIONES PUT
