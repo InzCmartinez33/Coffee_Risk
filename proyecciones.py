@@ -1,16 +1,27 @@
-import pandas as pd
 import numpy as np
-from sklearn.linear_model import Ridge
-from sklearn.preprocessing import StandardScaler
-from sklearn.pipeline import make_pipeline
+import pandas as pd
 
-EWMA_LAMBDA = 0.94
-COLS = ["cafe", "trm"]
-
+DIAS_HABILES_ANIO = 252
+DIAS_CALENDARIO_ANIO = 365
 
 # =====================================================================
-# PRECIO INTERNO DE REFERENCIA (sin cambios)
+# PARÁMETROS DE CADA MODELO
+#   alpha / beta = None  -> se calibran por máxima verosimilitud (GARCH(1,1)
+#                           con "variance targeting") sobre el historial.
+#   drift_anual          -> deriva esperada anual del log-precio.
+#                           Café: 0 (el precio de un futuro es martingala).
+#                           TRM : 0 (conservador para VaR; los puntos forward
+#                           pertenecen al COSTO de la cobertura, no a la
+#                           proyección de riesgo).
+#   vida_media_dias      -> si se indica, la TRM revierte a su media de largo
+#                           plazo (Ornstein-Uhlenbeck sobre log-TRM).
+#                           None = sin reversión (recomendado con < 5 años de datos).
 # =====================================================================
+PARAMS_CAFE = {"alpha": None, "beta": None, "drift_anual": 0.0}
+PARAMS_TRM = {"alpha": None, "beta": None, "drift_anual": 0.0,
+              "vida_media_dias": None, "theta_log": None}
+
+
 def calcular_precio_interno_referencia(
     precio_ny_centavos, trm, diferencial_usd, costos_usd,
     libras_carga, kg_pasilla, precio_pasilla_kg
@@ -23,129 +34,129 @@ def calcular_precio_interno_referencia(
     return precio_carga_total_cop, valor_excelso_cop, valor_pasilla_cop
 
 
-# =====================================================================
-# MÉTODO ANTERIOR (GBM gaussiano + covarianza EWMA) — se conserva como
-# línea base para el backtest
-# =====================================================================
-def simular_gbm_ewma_trayectorias(df_mercado, max_dias=90, simulaciones=5000):
-    np.random.seed(42)
-    retornos = np.log(df_mercado / df_mercado.shift(1)).dropna()
-    media_cafe = retornos["cafe"].mean()
-    media_trm = retornos["trm"].mean()
-
-    cov_serie = retornos.ewm(alpha=1 - EWMA_LAMBDA, adjust=False).cov()
-    cov_actual = cov_serie.loc[retornos.index[-1]].values
-    L = np.linalg.cholesky(cov_actual)
-
-    tray_cafe = np.zeros((max_dias + 1, simulaciones))
-    tray_trm = np.zeros((max_dias + 1, simulaciones))
-    tray_cafe[0, :] = df_mercado["cafe"].iloc[-1]
-    tray_trm[0, :] = df_mercado["trm"].iloc[-1]
-
-    drift_cafe = media_cafe - 0.5 * cov_actual[0, 0]
-    drift_trm = media_trm - 0.5 * cov_actual[1, 1]
-
-    for t in range(1, max_dias + 1):
-        Z = np.random.standard_normal(size=(simulaciones, 2))
-        ch = Z @ L.T
-        tray_cafe[t] = tray_cafe[t - 1] * np.exp(drift_cafe + ch[:, 0])
-        tray_trm[t] = tray_trm[t - 1] * np.exp(drift_trm + ch[:, 1])
-    return tray_cafe, tray_trm
+# ---------------------------------------------------------------------
+# Calibración de volatilidad (GARCH(1,1) con variance targeting)
+# ---------------------------------------------------------------------
+def _calibrar_garch(r):
+    """Busca (alpha, beta) en una malla maximizando la verosimilitud gaussiana."""
+    var_lr = r.var()
+    A, B = np.meshgrid(np.arange(0.02, 0.16, 0.01), np.arange(0.78, 0.975, 0.01))
+    A, B = A.ravel(), B.ravel()
+    ok = (A + B) < 0.995
+    A, B = A[ok], B[ok]
+    omega = (1.0 - A - B) * var_lr
+    var = np.full(A.shape, var_lr)
+    ll = np.zeros(A.shape)
+    for t in range(1, len(r)):
+        var = omega + A * r[t - 1] ** 2 + B * var
+        ll += -0.5 * (np.log(var) + r[t] ** 2 / var)
+    k = int(np.argmax(ll))
+    return float(A[k]), float(B[k])
 
 
-# =====================================================================
-# MÉTODO ML: volatilidad pronosticada con regresión (tipo HAR + Ridge)
-# + simulación por bootstrap de residuos estandarizados (FHS)
-# =====================================================================
-def _ewma_vol(r, lam):
-    return np.sqrt((r ** 2).ewm(alpha=1 - lam, adjust=False).mean())
+def _calibrar_modelo(r_log, params):
+    """Devuelve residuos estandarizados (para bootstrap) y estado de varianza actual."""
+    r = r_log - r_log.mean()
+    var_lr = r.var()
+    alpha, beta = params.get("alpha"), params.get("beta")
+    if alpha is None or beta is None:
+        alpha, beta = _calibrar_garch(r)
+    omega = (1.0 - alpha - beta) * var_lr
+
+    var = np.empty(len(r))
+    var[0] = var_lr
+    for t in range(1, len(r)):
+        var[t] = omega + alpha * r[t - 1] ** 2 + beta * var[t - 1]
+
+    z = r / np.sqrt(var)
+    z = (z - z.mean()) / z.std()                      # media 0, varianza 1, colas gruesas intactas
+    var_next = omega + alpha * r[-1] ** 2 + beta * var[-1]
+    return {"z": z, "omega": omega, "alpha": alpha, "beta": beta,
+            "var0": var_next, "vol_anual_actual": float(np.sqrt(var_next * DIAS_HABILES_ANIO))}
 
 
-def _features(r):
-    f = pd.DataFrame({
-        "ew94": _ewma_vol(r, 0.94),
-        "ew97": _ewma_vol(r, 0.97),
-        "s5": r.rolling(5).std(),
-        "s21": r.rolling(21).std(),
-        "s63": r.rolling(63).std(),
-        "abs5": r.abs().rolling(5).mean(),
-    })
-    return np.log(f + 1e-8)
+# ---------------------------------------------------------------------
+# Simulación: dos modelos distintos, un solo bootstrap conjunto
+# ---------------------------------------------------------------------
+def simular_cafe_trm(df_mercado, dias_habiles, simulaciones=5000,
+                     params_cafe=None, params_trm=None, semilla=42):
+    """
+    Café y TRM tienen su propia dinámica (volatilidad, deriva, reversión), pero
+    cada día simulado se sortea UNA fecha histórica y se toman de ella los
+    residuos de ambos activos. Así se conserva la correlación (y la dependencia
+    en las colas) empírica sin imponer normalidad ni Cholesky.
+    """
+    pc = {**PARAMS_CAFE, **(params_cafe or {})}
+    pt = {**PARAMS_TRM, **(params_trm or {})}
+    rng = np.random.default_rng(semilla)
+
+    ret = np.log(df_mercado[["cafe", "trm"]] / df_mercado[["cafe", "trm"]].shift(1)).dropna()
+    mc = _calibrar_modelo(ret["cafe"].to_numpy(), pc)
+    mt = _calibrar_modelo(ret["trm"].to_numpy(), pt)
+
+    idx = rng.integers(0, len(ret), size=(dias_habiles, simulaciones))
+
+    x_c = np.full(simulaciones, np.log(df_mercado["cafe"].iloc[-1]))
+    x_t = np.full(simulaciones, np.log(df_mercado["trm"].iloc[-1]))
+    var_c = np.full(simulaciones, mc["var0"])
+    var_t = np.full(simulaciones, mt["var0"])
+
+    mu_c = pc["drift_anual"] / DIAS_HABILES_ANIO
+    mu_t = pt["drift_anual"] / DIAS_HABILES_ANIO
+    vm = pt.get("vida_media_dias")
+    kappa = np.log(2.0) / vm if vm else 0.0
+    theta = pt.get("theta_log")
+    if theta is None:
+        theta = np.log(df_mercado["trm"]).mean()
+
+    tray_c = np.empty((dias_habiles + 1, simulaciones))
+    tray_t = np.empty((dias_habiles + 1, simulaciones))
+    tray_c[0], tray_t[0] = np.exp(x_c), np.exp(x_t)
+
+    for t in range(dias_habiles):
+        sh_c = np.sqrt(var_c) * mc["z"][idx[t]]
+        sh_t = np.sqrt(var_t) * mt["z"][idx[t]]
+
+        x_c = x_c + mu_c - 0.5 * var_c + sh_c
+        x_t = x_t + mu_t - 0.5 * var_t + kappa * (theta - x_t) + sh_t
+
+        var_c = mc["omega"] + mc["alpha"] * sh_c ** 2 + mc["beta"] * var_c
+        var_t = mt["omega"] + mt["alpha"] * sh_t ** 2 + mt["beta"] * var_t
+
+        tray_c[t + 1], tray_t[t + 1] = np.exp(x_c), np.exp(x_t)
+
+    info = {"cafe": {k: mc[k] for k in ("alpha", "beta", "vol_anual_actual")},
+            "trm": {k: mt[k] for k in ("alpha", "beta", "vol_anual_actual")}}
+    return tray_c, tray_t, info
 
 
-def _pronosticar_sigma(r, h):
-    """Devuelve (sigma_ml, sigma_ewma) diarias. Predice log(vol realizada
-    de los próximos h días). Sin look-ahead: solo usa filas cuyo objetivo
-    ya está observado al final de `r`."""
-    sigma_base = float(_ewma_vol(r, EWMA_LAMBDA).iloc[-1])
-    X = _features(r)
-    y = 0.5 * np.log((r ** 2).rolling(h).mean().shift(-h) + 1e-12)
-    datos = pd.concat([X, y.rename("y")], axis=1).dropna()
-    x_hoy = X.iloc[[-1]]
-
-    if len(datos) < 120 or x_hoy.isna().any().any():
-        return sigma_base, sigma_base  # pocos datos: cae a EWMA
-
-    modelo = make_pipeline(StandardScaler(), Ridge(alpha=10.0))
-    modelo.fit(datos[X.columns], datos["y"])
-    sigma_ml = float(np.exp(modelo.predict(x_hoy)[0]))
-    sigma_ml = float(np.clip(sigma_ml, 0.5 * sigma_base, 2.0 * sigma_base))
-    return sigma_ml, sigma_base
-
-
-def simular_gbm_ml_trayectorias(df_mercado, max_dias=90, simulaciones=5000, seed=42):
-    rng = np.random.default_rng(seed)
-    r = np.log(df_mercado / df_mercado.shift(1)).dropna()
-    h = int(min(max_dias, 63))
-
-    sigma = np.array([_pronosticar_sigma(r[c], h)[0] for c in COLS])
-
-    # Residuos estandarizados por la vol EWMA del día previo. Se remuestrean
-    # por fila para conservar correlación café-TRM y colas pesadas.
-    z = pd.DataFrame({c: r[c] / _ewma_vol(r[c], EWMA_LAMBDA).shift(1) for c in COLS}).dropna()
-    z = z.iloc[30:]                       # descarta el arranque de la EWMA (vol inicial poco fiable)
-    z = (z - z.mean()) / z.std()
-    z = z.clip(-6, 6)                     # evita que un solo día extremo domine las colas
-    z = (z - z.mean()) / z.std()
-    Z = z.values
-
-    idx = rng.integers(0, len(Z), size=(max_dias, simulaciones))
-    choques = Z[idx] * sigma                      # (dias, sims, 2)
-    drift = -0.5 * sigma ** 2                     # drift ~0: la media no es predecible
-    log_paths = np.cumsum(drift + choques, axis=0)
-    log_paths = np.concatenate([np.zeros((1, simulaciones, 2)), log_paths], axis=0)
-
-    ultimo = np.array([df_mercado[c].iloc[-1] for c in COLS])
-    tray = ultimo * np.exp(log_paths)
-    return tray[:, :, 0], tray[:, :, 1]
-
-
-def simular(df_mercado, max_dias, simulaciones, metodo="ml"):
-    if metodo == "ml":
-        return simular_gbm_ml_trayectorias(df_mercado, max_dias, simulaciones)
-    return simular_gbm_ewma_trayectorias(df_mercado, max_dias, simulaciones)
-
-
-# =====================================================================
-# PROYECCIONES PARA EL DASHBOARD
-# =====================================================================
 def calcular_todas_las_proyecciones(params: dict, df_mercado: pd.DataFrame) -> dict:
-    dias = params["dias_analisis"]
-    tray_cafe, tray_trm = simular(df_mercado, dias, 5000, params.get("metodo", "ml"))
+    dias_cal = params["dias_analisis"]
+    # Los retornos son por día HÁBIL: se convierte el horizonte calendario.
+    dias_habiles = max(1, int(round(dias_cal * DIAS_HABILES_ANIO / DIAS_CALENDARIO_ANIO)))
 
-    cafe_final = tray_cafe[dias, :]
-    trm_final = tray_trm[dias, :]
-
-    precios, _, _ = calcular_precio_interno_referencia(
-        cafe_final, trm_final, params["diferencial_usd"], params["costos_usd"],
-        params["libras_carga"], params["kg_pasilla"], params["precio_pasilla_kg"]
+    tray_cafe, tray_trm, info_modelos = simular_cafe_trm(
+        df_mercado, dias_habiles, simulaciones=5000,
+        params_cafe=params.get("params_cafe"), params_trm=params.get("params_trm"),
     )
 
-    var_95 = np.percentile(precios, 5)
+    cafe_final = tray_cafe[-1, :]
+    trm_final = tray_trm[-1, :]
+
+    precios_futuros_finales, _, _ = calcular_precio_interno_referencia(
+        cafe_final, trm_final,
+        params["diferencial_usd"], params["costos_usd"],
+        params["libras_carga"], params["kg_pasilla"], params["precio_pasilla_kg"],
+    )
+
+    var_95 = np.percentile(precios_futuros_finales, 5)
+    precio_promedio_sim = np.mean(precios_futuros_finales)
+    trm_promedio_sim = np.mean(trm_final)
+
     filas = []
     for op in params["cotizaciones"].get(params["tenor"], []):
         strike, prima = op["strike"], op["prima"]
-        esc = np.maximum(strike - precios, 0.0) + precios - prima
+        esc = np.maximum(strike - precios_futuros_finales, 0.0) + precios_futuros_finales - prima
         filas.append({
             "Strike (COP)": f"${strike:,.0f}",
             "Prima (COP)": f"${prima:,.0f}",
@@ -158,114 +169,15 @@ def calcular_todas_las_proyecciones(params: dict, df_mercado: pd.DataFrame) -> d
     return {
         "trayectorias_cafe": tray_cafe,
         "trayectorias_trm": tray_trm,
-        "precios_futuros": precios,
+        "cafe_final": cafe_final,
+        "trm_final": trm_final,
+        "dias_habiles": dias_habiles,
+        "bandas_cafe": np.percentile(tray_cafe, [5, 50, 95], axis=1),
+        "bandas_trm": np.percentile(tray_trm, [5, 50, 95], axis=1),
+        "info_modelos": info_modelos,
+        "precios_futuros": precios_futuros_finales,
         "var_95": var_95,
-        "precio_promedio_sim": np.mean(precios),
-        "trm_promedio_sim": np.mean(trm_final),
+        "precio_promedio_sim": precio_promedio_sim,
+        "trm_promedio_sim": trm_promedio_sim,
         "df_cotizaciones": pd.DataFrame(filas),
     }
-
-
-# =====================================================================
-# BACKTEST WALK-FORWARD
-# =====================================================================
-def backtest_walk_forward(df_mercado, horizonte, metodos=("gbm_ewma", "ml"),
-                          paso=5, min_train=250, simulaciones=1500):
-    """En cada fecha de origen usa SOLO datos hasta esa fecha, proyecta
-    `horizonte` días y compara con el precio realmente observado."""
-    filas = []
-    n = len(df_mercado)
-    for i in range(min_train, n - horizonte, paso):
-        hist = df_mercado.iloc[: i + 1]
-        real = df_mercado.iloc[i + horizonte]
-        for metodo in metodos:
-            tc, tt = simular(hist, horizonte, simulaciones, metodo)
-            for var, tray in (("cafe", tc), ("trm", tt)):
-                p5, p50, p95 = np.percentile(tray[-1], [5, 50, 95])
-                filas.append({
-                    "origen": hist.index[-1], "variable": var, "metodo": metodo,
-                    "spot": hist[var].iloc[-1], "p5": p5, "p50": p50, "p95": p95,
-                    "real": real[var],
-                })
-    return pd.DataFrame(filas)
-
-
-def resumir_backtest(df_bt):
-    filas = []
-    for (var, metodo), g in df_bt.groupby(["variable", "metodo"]):
-        err = (g["p50"] - g["real"]) / g["real"]
-        err_rw = (g["spot"] - g["real"]) / g["real"]
-        filas.append({
-            "Variable": "Café NY" if var == "cafe" else "TRM",
-            "Método": "GBM+EWMA (anterior)" if metodo == "gbm_ewma" else "ML (Ridge-vol + FHS)",
-            "MAPE P50 (%)": err.abs().mean() * 100,
-            "MAPE caminata aleatoria (%)": err_rw.abs().mean() * 100,
-            "Sesgo (%)": err.mean() * 100,
-            "RMSE (%)": float(np.sqrt((err ** 2).mean()) * 100),
-            "Cobertura P5-P95 (%) [ideal 90]": ((g["real"] >= g["p5"]) & (g["real"] <= g["p95"])).mean() * 100,
-            "Ancho intervalo (%)": ((g["p95"] - g["p5"]) / g["real"]).mean() * 100,
-            "N proyecciones": len(g),
-        })
-    return pd.DataFrame(filas).round(2)
-
-
-# =====================================================================
-# BACKTEST DEL VaR DE LA CARGA (excedencias + test de Kupiec)
-# =====================================================================
-def backtest_var_carga(df_mercado, horizonte, params_carga,
-                       metodos=("gbm_ewma", "ml"), paso=5,
-                       min_train=250, simulaciones=1500, nivel=0.05):
-    """En cada origen: predice el VaR (percentil `nivel`) del precio de la
-    carga a `horizonte` días y lo compara con el precio de la carga que
-    realmente resultó (calculado con café y TRM observados)."""
-    pc = params_carga
-    args = (pc["diferencial_usd"], pc["costos_usd"], pc["libras_carga"],
-            pc["kg_pasilla"], pc["precio_pasilla_kg"])
-    filas = []
-    n = len(df_mercado)
-    for i in range(min_train, n - horizonte, paso):
-        hist = df_mercado.iloc[: i + 1]
-        real = df_mercado.iloc[i + horizonte]
-        precio_hoy = calcular_precio_interno_referencia(
-            hist["cafe"].iloc[-1], hist["trm"].iloc[-1], *args)[0]
-        precio_real = calcular_precio_interno_referencia(
-            real["cafe"], real["trm"], *args)[0]
-        for metodo in metodos:
-            tc, tt = simular(hist, horizonte, simulaciones, metodo)
-            precios = calcular_precio_interno_referencia(tc[-1], tt[-1], *args)[0]
-            filas.append({
-                "origen": hist.index[-1], "metodo": metodo,
-                "precio_hoy": precio_hoy, "var": np.percentile(precios, nivel * 100),
-                "precio_real": precio_real,
-            })
-    return pd.DataFrame(filas)
-
-
-def _kupiec_pvalue(x, N, p):
-    from scipy.stats import chi2
-    if N == 0:
-        return np.nan
-    ph = x / N
-    ll0 = (N - x) * np.log(1 - p) + x * np.log(p)
-    ll1 = (N - x) * np.log(1 - ph) if x < N else 0.0
-    ll1 += x * np.log(ph) if x > 0 else 0.0
-    return float(1 - chi2.cdf(-2 * (ll0 - ll1), df=1))
-
-
-def resumir_var_carga(df_var, nivel=0.05):
-    filas = []
-    for metodo, g in df_var.groupby("metodo"):
-        exc = g["precio_real"] < g["var"]
-        x, N = int(exc.sum()), len(g)
-        corto = ((g["var"] - g["precio_real"]) / g["precio_hoy"])[exc]
-        filas.append({
-            "Método": "GBM+EWMA (anterior)" if metodo == "gbm_ewma" else "ML (Ridge-vol + FHS)",
-            "N": N,
-            "Excedencias": x,
-            "Tasa excedencias (%) [ideal 5]": round(100 * x / N, 2),
-            "p-valor Kupiec": round(_kupiec_pvalue(x, N, nivel), 3),
-            "VaR medio (% pérdida vs hoy)": round(((g["precio_hoy"] - g["var"]) / g["precio_hoy"]).mean() * 100, 2),
-            "Exceso medio al fallar (% precio hoy)": round(corto.mean() * 100, 2) if x > 0 else 0.0,
-            "Peor pérdida real (%)": round(((g["precio_hoy"] - g["precio_real"]) / g["precio_hoy"]).max() * 100, 2),
-        })
-    return pd.DataFrame(filas)
