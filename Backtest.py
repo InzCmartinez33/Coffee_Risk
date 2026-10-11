@@ -153,6 +153,57 @@ def figura_pit(df, activo):
     return fig
 
 
+def tabla_real_vs_p50(df, activo):
+    """Tabla detallada: una fila por fecha objetivo, con el error del P50."""
+    g = df[df["activo"] == activo].sort_values("fecha_objetivo").copy()
+    out = pd.DataFrame({
+        "Fecha origen": g["fecha_origen"].dt.date,
+        "Fecha objetivo": g["fecha_objetivo"].dt.date,
+        "Precio al origen": g["spot"],
+        "P50 proyectado": g["p50"],
+        "Real": g["real"],
+        "Error (Real − P50)": g["real"] - g["p50"],
+        "Error %": 100 * (g["real"] / g["p50"] - 1),
+        "P5": g["p5"],
+        "P95": g["p95"],
+        "Resultado": np.where(g["bajo_p5"], "Bajo P5", np.where(g["sobre_p95"], "Sobre P95", "Dentro")),
+    })
+    return out.reset_index(drop=True)
+
+
+def figura_real_vs_p50(df, activo):
+    """Izquierda: P50 (x) vs real (y) con la diagonal ideal. Derecha: error % por fecha."""
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+
+    g = df[df["activo"] == activo].sort_values("fecha_objetivo")
+    err = 100 * (g["real"] / g["p50"] - 1)
+    lo, hi = float(min(g["p50"].min(), g["real"].min())), float(max(g["p50"].max(), g["real"].max()))
+
+    fig = make_subplots(rows=1, cols=2, column_widths=[0.45, 0.55], horizontal_spacing=0.1,
+                        subplot_titles=("Real vs. P50 (ideal: sobre la diagonal)", "Error % del P50 por fecha"))
+    fig.add_trace(go.Scatter(x=[lo, hi], y=[lo, hi], mode="lines", line=dict(color="#6B7280", dash="dash"),
+                             name="Predicción perfecta", hoverinfo="skip"), row=1, col=1)
+    fig.add_trace(go.Scatter(
+        x=g["p50"], y=g["real"], mode="markers", name="Fechas",
+        marker=dict(size=8, color=err, colorscale="RdBu", cmid=0, showscale=True,
+                    colorbar=dict(title="Error %", x=0.43, len=0.8)),
+        customdata=np.stack([g["fecha_objetivo"].dt.strftime("%Y-%m-%d"), err], axis=1),
+        hovertemplate="Objetivo %{customdata[0]}<br>P50 %{x:,.2f}<br>Real %{y:,.2f}"
+                      "<br>Error %{customdata[1]:.2f}%<extra></extra>"), row=1, col=1)
+    fig.add_trace(go.Bar(x=g["fecha_objetivo"], y=err, name="Error %",
+                         marker_color=np.where(err >= 0, "#2563EB", "#DC2626"),
+                         hovertemplate="%{x|%Y-%m-%d}<br>Error %{y:.2f}%<extra></extra>"), row=1, col=2)
+    fig.add_hline(y=0, line_color="#111827", row=1, col=2)
+    fig.update_xaxes(title_text="P50 proyectado", row=1, col=1)
+    fig.update_yaxes(title_text="Valor real", row=1, col=1)
+    fig.update_yaxes(title_text="(Real / P50 − 1) %", row=1, col=2)
+    fig.update_layout(template="plotly_white", height=420, showlegend=False,
+                      margin=dict(l=10, r=10, t=60, b=10),
+                      title=f"{ETIQUETAS.get(activo, activo)} — valor real contra P50 de la proyección")
+    return fig
+
+
 # ---------------------------------------------------------------------
 # Sección de Streamlit
 # ---------------------------------------------------------------------
@@ -192,6 +243,21 @@ def render_backtest_streamlit(df_mercado, params_carga=None):
                "mira 'Obs. independientes aprox.'. Un p-valor bajo (< 0.05) indica que la tasa de "
                "violaciones del P5 difiere de lo esperado.")
 
-    for activo in [a for a in ("cafe", "trm", "carga") if a in res["activo"].unique()]:
-        st.plotly_chart(figura_bandas(res, activo, horizonte), use_container_width=True)
-        st.plotly_chart(figura_pit(res, activo), use_container_width=True)
+    activos = [a for a in ("cafe", "trm", "carga") if a in res["activo"].unique()]
+    for tab, activo in zip(st.tabs([ETIQUETAS[a] for a in activos]), activos):
+        with tab:
+            st.plotly_chart(figura_real_vs_p50(res, activo), use_container_width=True)
+            tabla = tabla_real_vs_p50(res, activo)
+            st.markdown("**Detalle: real vs. P50 por fecha**")
+            st.dataframe(
+                tabla, use_container_width=True, hide_index=True,
+                column_config={c: st.column_config.NumberColumn(format="%.2f")
+                               for c in ("Precio al origen", "P50 proyectado", "Real",
+                                         "Error (Real − P50)", "P5", "P95")}
+                | {"Error %": st.column_config.NumberColumn(format="%+.2f%%")},
+            )
+            st.download_button("⬇️ Descargar tabla (CSV)", tabla.to_csv(index=False).encode("utf-8"),
+                               file_name=f"backtest_{activo}_{horizonte}d.csv", mime="text/csv",
+                               key=f"dl_{activo}")
+            st.plotly_chart(figura_bandas(res, activo, horizonte), use_container_width=True)
+            st.plotly_chart(figura_pit(res, activo), use_container_width=True)
