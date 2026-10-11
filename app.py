@@ -118,7 +118,9 @@ def obtener_datos_mercado():
     fecha_inicio = datetime.now() - timedelta(days=366)
     try:
         t = yf.Ticker("KC=F")
-        df_cafe = t.history(period="1y")
+        # 1) Historial más largo para calibrar (obtener_datos_mercado)
+        df_cafe = t.history(period="5y")
+        fecha_inicio = datetime.now() - timedelta(days=365 * 5 + 5)
         df_trm = obtener_trm_oficial(fecha_inicio)
 
         datos_cafe = df_cafe[["Close"]].rename(columns={"Close": "cafe"})
