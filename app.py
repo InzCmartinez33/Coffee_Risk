@@ -309,3 +309,8 @@ st.subheader(f"5. Cotizaciones Reales de Mercado para Opciones Put ({TENOR_ANALI
 st.dataframe(proyecciones['df_cotizaciones'], use_container_width=True)
 from datetime import datetime
 st.caption(f"Cotizaciones actualizadas: {datetime.fromtimestamp(_mtime):%Y-%m-%d %H:%M}")
+
+
+
+from backtest import render_backtest_streamlit
+render_backtest_streamlit(df_mercado, params_simulacion)
