@@ -3,8 +3,10 @@ Backtest "rolling origin" de los modelos de café y TRM (y del precio de la carg
 
 En cada fecha de origen t el modelo se calibra SOLO con datos hasta t, simula h
 días hábiles hacia adelante y se compara contra lo que realmente ocurrió en t+h.
-Se usa la misma función de producción (simular_cafe_trm), así que se está
-probando exactamente el modelo que alimenta el dashboard.
+Se usa la misma función de producción (simular_cafe_trm).
+
+Se guardan varios percentiles del pronóstico; la banda que se grafica y evalúa
+(por defecto P20–P80) se elige después, sin volver a simular.
 """
 import math
 import numpy as np
@@ -13,6 +15,9 @@ import pandas as pd
 from proyecciones import simular_cafe_trm, calcular_precio_interno_referencia
 
 ETIQUETAS = {"cafe": "Café NY (USD/lb)", "trm": "TRM (COP/USD)", "carga": "Precio de la carga (COP)"}
+QS = [5, 10, 20, 25, 50, 75, 80, 90, 95]          # percentiles almacenados
+BAJOS = [5, 10, 20, 25, 50]                         # opciones para el límite inferior
+ALTOS = [50, 75, 80, 90, 95]                        # opciones para el límite superior
 
 
 # ---------------------------------------------------------------------
@@ -21,12 +26,12 @@ ETIQUETAS = {"cafe": "Café NY (USD/lb)", "trm": "TRM (COP/USD)", "carga": "Prec
 def ejecutar_backtest(df_mercado, dias_habiles, paso=5, ventana=500,
                       simulaciones=1000, params_carga=None):
     """
-    df_mercado   : DataFrame con columnas 'cafe' (centavos/lb) y 'trm', índice fecha.
+    df_mercado   : DataFrame con 'cafe' (centavos/lb) y 'trm', índice fecha.
     dias_habiles : horizonte en días hábiles (1m≈21, 3m≈63, 6m≈126).
     paso         : cada cuántos días hábiles se toma un nuevo origen.
     ventana      : observaciones usadas para calibrar en cada origen (rolling).
-    params_carga : dict opcional con diferencial_usd, costos_usd, libras_carga,
-                   kg_pasilla, precio_pasilla_kg -> también se backtestea la carga.
+    params_carga : dict opcional (diferencial_usd, costos_usd, libras_carga,
+                   kg_pasilla, precio_pasilla_kg) para backtestear también la carga.
     """
     n = len(df_mercado)
     ultimo_origen = n - 1 - dias_habiles
@@ -38,8 +43,7 @@ def ejecutar_backtest(df_mercado, dias_habiles, paso=5, ventana=500,
         hist = df_mercado.iloc[i - ventana + 1: i + 1]
         tray_c, tray_t, _ = simular_cafe_trm(hist, dias_habiles, simulaciones=simulaciones, semilla=1000 + i)
         sim = {"cafe": tray_c[-1] / 100.0, "trm": tray_t[-1]}
-        real_row = df_mercado.iloc[i + dias_habiles]
-        spot_row = df_mercado.iloc[i]
+        real_row, spot_row = df_mercado.iloc[i + dias_habiles], df_mercado.iloc[i]
         real = {"cafe": real_row["cafe"] / 100.0, "trm": real_row["trm"]}
         spot = {"cafe": spot_row["cafe"] / 100.0, "trm": spot_row["trm"]}
 
@@ -52,53 +56,58 @@ def ejecutar_backtest(df_mercado, dias_habiles, paso=5, ventana=500,
             spot["carga"] = calcular_precio_interno_referencia(spot_row["cafe"], spot_row["trm"], *args)[0]
 
         for activo, v in sim.items():
-            p5, p50, p95 = np.percentile(v, [5, 50, 95])
-            filas.append({
-                "activo": activo,
-                "fecha_origen": df_mercado.index[i],
-                "fecha_objetivo": df_mercado.index[i + dias_habiles],
-                "spot": spot[activo], "real": real[activo],
-                "p5": p5, "p50": p50, "p95": p95,
-                "pit": float((v < real[activo]).mean()),
-            })
-    df = pd.DataFrame(filas)
-    df["bajo_p5"] = df["real"] < df["p5"]
-    df["sobre_p95"] = df["real"] > df["p95"]
-    return df
+            fila = {"activo": activo,
+                    "fecha_origen": df_mercado.index[i],
+                    "fecha_objetivo": df_mercado.index[i + dias_habiles],
+                    "spot": spot[activo], "real": real[activo],
+                    "pit": float((v < real[activo]).mean())}
+            for q, val in zip(QS, np.percentile(v, QS)):
+                fila[f"p{q}"] = val
+            filas.append(fila)
+    return pd.DataFrame(filas)
+
+
+def _marcar(df, q_bajo, q_alto):
+    """Agrega los límites elegidos y si el real quedó fuera de la banda."""
+    if q_bajo not in QS or q_alto not in QS or q_bajo >= q_alto:
+        raise ValueError(f"Banda inválida: P{q_bajo}–P{q_alto}")
+    d = df.copy()
+    d["lim_bajo"], d["lim_alto"] = d[f"p{q_bajo}"], d[f"p{q_alto}"]
+    d["bajo"] = d["real"] < d["lim_bajo"]
+    d["sobre"] = d["real"] > d["lim_alto"]
+    return d
 
 
 # ---------------------------------------------------------------------
 # Métricas
 # ---------------------------------------------------------------------
-def kupiec_pof(n, x, p=0.05):
-    """Prueba de Kupiec (cobertura incondicional). Devuelve el p-valor."""
+def kupiec_pof(n, x, p):
+    """Kupiec (cobertura incondicional): x violaciones en n, esperadas con prob. p. Devuelve p-valor."""
     if n == 0:
         return float("nan")
     pi = x / n
     ll0 = (n - x) * math.log(1 - p) + x * math.log(p)
-    ll1 = 0.0
-    if x > 0:
-        ll1 += x * math.log(pi)
-    if n - x > 0:
-        ll1 += (n - x) * math.log(1 - pi)
+    ll1 = (x * math.log(pi) if x > 0 else 0.0) + ((n - x) * math.log(1 - pi) if n - x > 0 else 0.0)
     lr = max(0.0, -2.0 * (ll0 - ll1))
-    return math.erfc(math.sqrt(lr / 2.0))      # chi-cuadrado, 1 g.l.
+    return math.erfc(math.sqrt(lr / 2.0))          # chi-cuadrado, 1 g.l.
 
 
-def resumen_backtest(df, dias_habiles, paso):
+def resumen_backtest(df, dias_habiles, paso, q_bajo=20, q_alto=80):
+    d = _marcar(df, q_bajo, q_alto)
+    nominal = q_alto - q_bajo
     filas = []
-    for activo, g in df.groupby("activo"):
+    for activo, g in d.groupby("activo"):
         n = len(g)
-        x = int(g["bajo_p5"].sum())
-        # Con paso < horizonte los orígenes se solapan: muestra efectiva menor.
-        n_efectivo = max(1, int(n * min(1.0, paso / dias_habiles)))
+        fuera = int((g["bajo"] | g["sobre"]).sum())
+        n_efectivo = max(1, int(n * min(1.0, paso / dias_habiles)))   # orígenes solapados
         filas.append({
             "Activo": ETIQUETAS.get(activo, activo),
             "Orígenes": n,
-            "Real < P5 (esperado 5%)": f"{100 * x / n:.1f}%",
-            "Real > P95 (esperado 5%)": f"{100 * g['sobre_p95'].mean():.1f}%",
-            "Dentro de P5–P95 (esperado 90%)": f"{100 * (1 - g['bajo_p5'].mean() - g['sobre_p95'].mean()):.1f}%",
-            "Kupiec p-valor (P5)": f"{kupiec_pof(n, x):.3f}",
+            f"Dentro de P{q_bajo}–P{q_alto} (esperado {nominal}%)": f"{100 * (1 - fuera / n):.1f}%",
+            f"Real < P{q_bajo} (esperado {q_bajo}%)": f"{100 * g['bajo'].mean():.1f}%",
+            f"Real > P{q_alto} (esperado {100 - q_alto}%)": f"{100 * g['sobre'].mean():.1f}%",
+            "Kupiec p-valor (banda)": f"{kupiec_pof(n, fuera, 1 - nominal / 100):.3f}",
+            "Real < P5 — VaR 95% (esperado 5%)": f"{100 * (g['real'] < g['p5']).mean():.1f}%",
             "Sesgo mediana (%)": f"{100 * (g['real'] / g['p50'] - 1).mean():+.2f}",
             "Error abs. P50 (%)": f"{100 * (g['real'] / g['p50'] - 1).abs().mean():.2f}",
             "Error abs. paseo aleatorio (%)": f"{100 * (g['real'] / g['spot'] - 1).abs().mean():.2f}",
@@ -110,24 +119,26 @@ def resumen_backtest(df, dias_habiles, paso):
 # ---------------------------------------------------------------------
 # Gráficos interactivos (Plotly)
 # ---------------------------------------------------------------------
-def figura_bandas(df, activo, dias_habiles):
+def figura_bandas(df, activo, dias_habiles, q_bajo=20, q_alto=80):
     import plotly.graph_objects as go
-    g = df[df["activo"] == activo].sort_values("fecha_objetivo")
+    g = _marcar(df, q_bajo, q_alto)
+    g = g[g["activo"] == activo].sort_values("fecha_objetivo")
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=g["fecha_objetivo"], y=g["p95"], mode="lines", line=dict(width=0),
+    fig.add_trace(go.Scatter(x=g["fecha_objetivo"], y=g["lim_alto"], mode="lines", line=dict(width=0),
                              showlegend=False, hoverinfo="skip"))
-    fig.add_trace(go.Scatter(x=g["fecha_objetivo"], y=g["p5"], mode="lines", line=dict(width=0),
-                             fill="tonexty", fillcolor="rgba(37,99,235,0.18)", name="Banda P5–P95 del modelo",
-                             hoverinfo="skip"))
+    fig.add_trace(go.Scatter(x=g["fecha_objetivo"], y=g["lim_bajo"], mode="lines", line=dict(width=0),
+                             fill="tonexty", fillcolor="rgba(37,99,235,0.22)",
+                             name=f"Banda P{q_bajo}–P{q_alto}", hoverinfo="skip"))
     fig.add_trace(go.Scatter(x=g["fecha_objetivo"], y=g["p50"], mode="lines",
                              line=dict(color="#1E3A8A", dash="dot"), name="Mediana proyectada (P50)",
-                             customdata=g[["fecha_origen", "p5", "p95"]],
+                             customdata=g[["fecha_origen", "lim_bajo", "lim_alto"]],
                              hovertemplate="Objetivo %{x|%Y-%m-%d}<br>Origen %{customdata[0]|%Y-%m-%d}"
-                                           "<br>P50 %{y:,.2f}<br>P5 %{customdata[1]:,.2f} · P95 %{customdata[2]:,.2f}<extra></extra>"))
+                                           f"<br>P50 %{{y:,.2f}}<br>P{q_bajo} %{{customdata[1]:,.2f}} · "
+                                           f"P{q_alto} %{{customdata[2]:,.2f}}<extra></extra>"))
     fig.add_trace(go.Scatter(x=g["fecha_objetivo"], y=g["real"], mode="lines+markers",
                              line=dict(color="#111827", width=2), marker=dict(size=5), name="Dato real",
                              hovertemplate="Real %{y:,.2f}<extra></extra>"))
-    fuera = g[g["bajo_p5"] | g["sobre_p95"]]
+    fuera = g[g["bajo"] | g["sobre"]]
     fig.add_trace(go.Scatter(x=fuera["fecha_objetivo"], y=fuera["real"], mode="markers",
                              marker=dict(color="#DC2626", size=10, symbol="x"), name="Fuera de la banda",
                              hovertemplate="Fuera de banda<br>Real %{y:,.2f}<extra></extra>"))
@@ -153,9 +164,10 @@ def figura_pit(df, activo):
     return fig
 
 
-def tabla_real_vs_p50(df, activo):
-    """Tabla detallada: una fila por fecha objetivo, con el error del P50."""
-    g = df[df["activo"] == activo].sort_values("fecha_objetivo").copy()
+def tabla_real_vs_p50(df, activo, q_bajo=20, q_alto=80):
+    """Una fila por fecha objetivo, con el error del P50 y la banda elegida."""
+    g = _marcar(df, q_bajo, q_alto)
+    g = g[g["activo"] == activo].sort_values("fecha_objetivo")
     out = pd.DataFrame({
         "Fecha origen": g["fecha_origen"].dt.date,
         "Fecha objetivo": g["fecha_objetivo"].dt.date,
@@ -164,9 +176,9 @@ def tabla_real_vs_p50(df, activo):
         "Real": g["real"],
         "Error (Real − P50)": g["real"] - g["p50"],
         "Error %": 100 * (g["real"] / g["p50"] - 1),
-        "P5": g["p5"],
-        "P95": g["p95"],
-        "Resultado": np.where(g["bajo_p5"], "Bajo P5", np.where(g["sobre_p95"], "Sobre P95", "Dentro")),
+        f"P{q_bajo}": g["lim_bajo"],
+        f"P{q_alto}": g["lim_alto"],
+        "Resultado": np.where(g["bajo"], f"Bajo P{q_bajo}", np.where(g["sobre"], f"Sobre P{q_alto}", "Dentro")),
     })
     return out.reset_index(drop=True)
 
@@ -220,6 +232,15 @@ def render_backtest_streamlit(df_mercado, params_carga=None):
     paso = c2.slider("Paso entre orígenes (días hábiles)", 1, 21, 5)
     ventana = c3.number_input("Ventana de calibración (obs.)", min_value=120, max_value=1500, value=500, step=50)
 
+    b1, b2 = st.columns(2)
+    q_bajo = b1.selectbox("Límite inferior de la banda", BAJOS, index=BAJOS.index(20),
+                          format_func=lambda q: f"P{q}")
+    q_alto = b2.selectbox("Límite superior de la banda", ALTOS, index=ALTOS.index(80),
+                          format_func=lambda q: f"P{q}")
+    if q_bajo >= q_alto:
+        st.warning("El límite inferior debe ser menor que el superior.")
+        return
+
     if len(df_mercado) < ventana + horizonte + 30:
         st.warning(f"Solo hay {len(df_mercado)} observaciones. Descarga más historial (p. ej. 5 años) "
                    "o reduce la ventana/horizonte.")
@@ -234,30 +255,32 @@ def render_backtest_streamlit(df_mercado, params_carga=None):
 
     guardado = st.session_state.get("backtest")
     if not guardado or guardado[0] != clave:
-        st.info("Pulsa **Ejecutar backtest** para calcular (tarda unos segundos).")
+        st.info("Pulsa **Ejecutar backtest** para calcular (tarda unos segundos). "
+                "La banda se puede cambiar después sin volver a ejecutar.")
         return
 
     res = guardado[1]
-    st.dataframe(resumen_backtest(res, horizonte, paso), use_container_width=True, hide_index=True)
-    st.caption("Si los orígenes se solapan (paso < horizonte), el p-valor de Kupiec es optimista: "
-               "mira 'Obs. independientes aprox.'. Un p-valor bajo (< 0.05) indica que la tasa de "
-               "violaciones del P5 difiere de lo esperado.")
+    st.dataframe(resumen_backtest(res, horizonte, paso, q_bajo, q_alto), use_container_width=True, hide_index=True)
+    st.caption("Una banda más angosta no reduce la incertidumbre del mercado: solo cambia qué porcentaje de "
+               f"casos se espera que caiga dentro (aquí {q_alto - q_bajo}%). Un modelo calibrado debe acertar "
+               "ese porcentaje, no más ni menos. Si los orígenes se solapan (paso < horizonte), el p-valor de "
+               "Kupiec es optimista: mira 'Obs. independientes aprox.'.")
 
     activos = [a for a in ("cafe", "trm", "carga") if a in res["activo"].unique()]
     for tab, activo in zip(st.tabs([ETIQUETAS[a] for a in activos]), activos):
         with tab:
             st.plotly_chart(figura_real_vs_p50(res, activo), use_container_width=True)
-            tabla = tabla_real_vs_p50(res, activo)
+            tabla = tabla_real_vs_p50(res, activo, q_bajo, q_alto)
             st.markdown("**Detalle: real vs. P50 por fecha**")
             st.dataframe(
                 tabla, use_container_width=True, hide_index=True,
                 column_config={c: st.column_config.NumberColumn(format="%.2f")
-                               for c in ("Precio al origen", "P50 proyectado", "Real",
-                                         "Error (Real − P50)", "P5", "P95")}
+                               for c in ("Precio al origen", "P50 proyectado", "Real", "Error (Real − P50)",
+                                         f"P{q_bajo}", f"P{q_alto}")}
                 | {"Error %": st.column_config.NumberColumn(format="%+.2f%%")},
             )
             st.download_button("⬇️ Descargar tabla (CSV)", tabla.to_csv(index=False).encode("utf-8"),
                                file_name=f"backtest_{activo}_{horizonte}d.csv", mime="text/csv",
                                key=f"dl_{activo}")
-            st.plotly_chart(figura_bandas(res, activo, horizonte), use_container_width=True)
+            st.plotly_chart(figura_bandas(res, activo, horizonte, q_bajo, q_alto), use_container_width=True)
             st.plotly_chart(figura_pit(res, activo), use_container_width=True)
