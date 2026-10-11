@@ -176,8 +176,8 @@ trayectorias_cafe = proyecciones['trayectorias_cafe']
 trayectorias_trm = proyecciones['trayectorias_trm']
 
 # Vectores simulados en el horizonte (t = dias_analisis)
-cafe_futuro = trayectorias_cafe[dias_analisis, :]
-trm_futura = trayectorias_trm[dias_analisis, :]
+cafe_futuro = proyecciones['cafe_final']
+trm_futura = proyecciones['trm_final']
 
 # El precio de la carga por escenario y el VaR ya vienen calculados en el
 # backend derivándose exactamente de cafe_futuro / trm_futura de arriba.
