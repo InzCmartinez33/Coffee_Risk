@@ -312,5 +312,5 @@ st.caption(f"Cotizaciones actualizadas: {datetime.fromtimestamp(_mtime):%Y-%m-%d
 
 
 
-from backtest import render_backtest_streamlit
+from Backtest import render_backtest_streamlit
 render_backtest_streamlit(df_mercado, params_simulacion)
