@@ -255,9 +255,9 @@ perdida_total_empresa = perdida_max_por_carga * VOLUMEN_CARGAS
 
 col_a, col_b, col_c, col_d = st.columns(4)
 col_a.metric("Precio Esperado por Carga", f"${precio_promedio_sim:,.0f} COP")
-col_b.metric("TRM Promedio Simulada", f"${trm_p50:,.2f} COP")
-col_c.metric("Escenario Critico Precio por Carga", f"${var_95:,.0f} COP", delta=f"-${perdida_max_por_carga:,.0f}", delta_color="inverse")
-col_d.metric("Riesgo Máximo Empresa", f"${perdida_total_empresa/1e6:,.2f} M COP", delta_color="inverse")
+col_b.metric("TRM Promedio Esperada", f"${trm_p50:,.2f} COP")
+col_c.metric("Peor Escenario (5%) Probabilidad", f"${var_95:,.0f} COP", delta=f"-${perdida_max_por_carga:,.0f}", delta_color="inverse")
+col_d.metric("Riesgo Máximo Perdida", f"${perdida_total_empresa/1e6:,.2f} M COP", delta_color="inverse")
 
 if perdida_total_empresa > (valor_inventario_hoy * 0.07):
     st.error("🔴 **RECOMENDACIÓN:** RIESGO ALTO. Se aconseja tomar coberturas financieras (Forward u Opciones Put).")
