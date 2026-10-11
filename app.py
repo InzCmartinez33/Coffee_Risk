@@ -209,20 +209,20 @@ st.markdown("---")
 # ---------------------------------------------------------------------
 st.subheader(f"2. Proyecciones de Mercado a {dias_analisis} Días")
 
-cafe_p5 = np.percentile(cafe_futuro, 5) / 100.0
+cafe_p5 = np.percentile(cafe_futuro, 25) / 100.0
 cafe_p50 = np.percentile(cafe_futuro, 50) / 100.0
-cafe_p95 = np.percentile(cafe_futuro, 95) / 100.0
+cafe_p95 = np.percentile(cafe_futuro, 75) / 100.0
 
-trm_p5 = np.percentile(trm_futura, 5)
+trm_p5 = np.percentile(trm_futura, 25)
 trm_p50 = np.percentile(trm_futura, 50)
-trm_p95 = np.percentile(trm_futura, 95)
+trm_p95 = np.percentile(trm_futura, 75)
 
 col_cafe, col_trm = st.columns(2)
 
 with col_cafe:
     st.markdown("#### ☕ Proyección Precio Internacional Café (USD/lb)")
     st.metric("Promedio Esperado (P50)", f"${cafe_p50:.2f} USD/lb", delta=f"{(cafe_p50 - (precio_ny_hoy/100)):.2f} USD")
-    st.caption(f"📉 **Mínimo Esperado:** ${cafe_p5:.2f} USD/lb")
+    st.caption(f"📉 **Mínimo Esperado:** ${cafe_p25:.2f} USD/lb")
     st.caption(f"📈 **Maximo Esperado:** ${cafe_p75:.2f} USD/lb")
 
     st.pyplot(grafico_proyeccion(
