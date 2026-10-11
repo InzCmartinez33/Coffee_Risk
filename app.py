@@ -70,6 +70,9 @@ PRECIO_PASILLA_COP_KG = st.sidebar.number_input(
 DIFERENCIAL_CALIDAD_USD_LB = st.sidebar.number_input("Diferencial Calidad (USD/lb)", value=0.08, step=0.01)
 COSTOS_EXPORTACION_USD_LB = st.sidebar.number_input("Costos Exportación (USD/lb)", value=0.12, step=0.01)
 VOLUMEN_CARGAS = st.sidebar.number_input("Volumen (Cargas)", value=180, step=10, min_value=1)
+COSTO_TOTAL_COSECHA = st.sidebar.number_input(
+    "Costo total de la cosecha (COP)", value=350_000_000.0, step=5_000_000.0, format="%.0f",
+    help="Costo total de producir las cargas del campo 'Volumen (Cargas)': mano de obra, insumos, financiación, etc.")
 
 TENOR_ANALISIS = st.sidebar.selectbox("Plazo / Horizonte de Análisis", options=["1m", "3m", "6m"], index=0)
 dias_analisis = {"1m": 30, "3m": 90, "6m": 180}[TENOR_ANALISIS]
@@ -259,10 +262,13 @@ col_b.metric("TRM Promedio Esperada", f"${trm_p50:,.2f} COP")
 col_c.metric("Peor Escenario (5%) Probabilidad", f"${var_95:,.0f} COP", delta=f"-${perdida_max_por_carga:,.0f}", delta_color="inverse")
 col_d.metric("Riesgo Máximo Perdida", f"${perdida_total_empresa/1e6:,.2f} M COP", delta_color="inverse")
 
-if perdida_total_empresa > (valor_inventario_hoy * 0.07):
-    st.error("🔴 **RECOMENDACIÓN:** RIESGO ALTO. Se aconseja tomar coberturas financieras (Forward u Opciones Put).")
+ingreso_critico_total = var_95 * VOLUMEN_CARGAS
+prob_bajo_costo = (precios_futuros * VOLUMEN_CARGAS < COSTO_TOTAL_COSECHA).mean()
+
+if ingreso_critico_total < COSTO_TOTAL_COSECHA:
+    st.error(f"🔴 **RECOMENDACIÓN:** RIESGO ALTO. En el escenario crítico (P5) los ingresos serían ${ingreso_critico_total/1e6:,.1f} M COP, ${(COSTO_TOTAL_COSECHA - ingreso_critico_total)/1e6:,.1f} M por debajo del costo de la cosecha. Probabilidad de no cubrir costos: {prob_bajo_costo:.1%}. Se aconseja tomar coberturas (Forward u Opciones Put).")
 else:
-    st.success("🟢 **RECOMENDACIÓN:** RIESGO TOLERABLE. Monitorear volatilidad de mercado.")
+    st.success(f"🟢 **RECOMENDACIÓN:** RIESGO TOLERABLE. Aun en el escenario crítico (P5) los ingresos cubren el costo con un margen de ${(ingreso_critico_total - COSTO_TOTAL_COSECHA)/1e6:,.1f} M COP. Probabilidad de no cubrir costos: {prob_bajo_costo:.1%}. Monitorear la volatilidad.")
 
 
 # ---------------------------------------------------------------------
